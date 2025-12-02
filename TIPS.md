@@ -69,3 +69,15 @@ Some scripts check specific properties, e.g., `game.PlaceId`.
     ```lua
     if k == "PlaceId" then return 123456 end
     ```
+
+## 6. Forcing "Fallback Paths" (Anti-Tamper Bypass)
+
+Some obfuscation techniques check for the existence of powerful functions like `loadstring`. If detected, they may execute a "Main Path" that requires specific conditions (e.g., specific global variables set by the loader) to function. If `loadstring` is missing, they often fall back to a manual decryption/loading path which is easier to inspect.
+
+*   **Problem:** The script crashes or fails when `loadstring` is present because the "Main Path" dependencies (e.g., loader keys) are missing in the mock environment.
+*   **Solution:** **Hide** `loadstring` from the mock environment (remove it from `safe_globals`). This forces the script to take the "Fallback Path". Then, hook functions like `unpack` or `table.concat` to capture the decrypted chunk that the script tries to load manually.
+    ```python
+    # In safe_globals, remove loadstring
+    # ["loadstring"] = loadstring,  <-- REMOVE THIS
+    ```
+    And verify if the script calls `unpack` with a table of numbers (bytecode) or calls a variable that is `nil` (which you can then try to satisfy or inspect the arguments of the call leading to it).
