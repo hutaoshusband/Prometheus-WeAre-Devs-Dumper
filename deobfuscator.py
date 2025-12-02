@@ -16,7 +16,6 @@ def deobfuscate_file(filepath):
         return
 
     # 1. Identify Variable Name for String Table
-    # Usually: local f={"..."} or local D={"..."} at the start
     match = re.search(r'local ([a-zA-Z0-9_]+)=\{"', content)
     if not match:
         print(f"Could not identify string table variable in {filepath}.")
@@ -24,17 +23,12 @@ def deobfuscate_file(filepath):
     var_name = match.group(1)
 
     # 2. Prepare Mock Environment Code
-    # We blacklist dangerous libraries for security.
     mock_env_code = r"""
--- Security: Disable dangerous libraries
-os = nil
-io = nil
-package = nil
-debug = nil
-dofile = nil
-loadfile = nil
-
+-- Standard Lua Libraries (Enabled)
 local real_type = type
+local real_tonumber = tonumber
+local real_unpack = unpack
+local real_concat = table.concat
 
 local function type(v)
     local mt = getmetatable(v)
@@ -50,6 +44,47 @@ local function typeof(v)
         return "Instance"
     end
     return type(v)
+end
+
+local function tonumber(v, base)
+    if type(v) == "userdata" or (type(v) == "table" and getmetatable(v) and getmetatable(v).__is_mock_dummy) then
+        return 1
+    end
+    return real_tonumber(v, base)
+end
+
+-- Hook unpack to capture the chunk
+local function unpack(t, i, j)
+    if real_type(t) == "table" then
+        -- Check if it looks like a bytecode table (numeric keys, string/number values)
+        -- Or a table of strings
+        local looks_like_chunk = true
+        for k, v in pairs(t) do
+            if real_type(k) ~= "number" then looks_like_chunk = false break end
+        end
+        
+        if looks_like_chunk and #t > 0 then
+            print("UNPACK CALLED WITH TABLE (Potential Chunk): size=" .. #t)
+            -- Try to concat and print
+            local success, res = pcall(real_concat, t)
+            if success then
+                print("CAPTURED CHUNK STRING: " .. res)
+                if res:match("http") or res:match("www") then
+                    print("URL DETECTED IN UNPACK --> " .. res:match("https?://[%w%.%-%/]+"))
+                end
+            end
+        end
+    end
+    return real_unpack(t, i, j)
+end
+
+-- Hook table.concat just in case
+local function table_concat(t, sep, i, j)
+    local res = real_concat(t, sep, i, j)
+    if real_type(res) == "string" and (res:match("http") or res:match("www")) then
+         print("URL DETECTED IN CONCAT --> " .. res:match("https?://[%w%.%-%/]+"))
+    end
+    return res
 end
 
 local function create_dummy(name)
@@ -80,28 +115,12 @@ local function create_dummy(name)
                 end
             end
 
-            -- Log the call result as requested
             local var_name = name:gsub("%.", "_") .. "_" .. math.random(100, 999)
             print("CALL_RESULT --> local " .. var_name .. " = " .. name .. "(" .. arg_str .. ")")
-
-            if name:match("HttpGet") or name:match("request") then
-                for _, v in ipairs(args) do
-                    if real_type(v) == "string" and (v:match("^http") or v:match("^www")) then
-                        print("URL DETECTED --> " .. v)
-                    end
-                end
-            end
-
-            if name == "loadstring" or name:match("%.loadstring$") then
-                 return create_dummy("loadstring_result")
-            end
-
             return create_dummy(var_name)
         end,
         __tostring = function() return name end,
         __concat = function(a, b) return tostring(a) .. tostring(b) end,
-
-        -- Arithmetic metamethods
         __add = function(a, b) return create_dummy("("..tostring(a).."+"..tostring(b)..")") end,
         __sub = function(a, b) return create_dummy("("..tostring(a).."-"..tostring(b)..")") end,
         __mul = function(a, b) return create_dummy("("..tostring(a).."*"..tostring(b)..")") end,
@@ -109,12 +128,9 @@ local function create_dummy(name)
         __mod = function(a, b) return create_dummy("("..tostring(a).."%"..tostring(b)..")") end,
         __pow = function(a, b) return create_dummy("("..tostring(a).."^"..tostring(b)..")") end,
         __unm = function(a) return create_dummy("-"..tostring(a)) end,
-
-        -- Logic metamethods
         __lt = function(a, b) return false end,
         __le = function(a, b) return false end,
         __eq = function(a, b) return false end,
-
         __len = function(a) return 0 end,
     }
     setmetatable(d, mt)
@@ -124,13 +140,19 @@ end
 local MockEnv = {}
 local safe_globals = {
     ["string"] = string,
-    ["table"] = table,
+    ["table"] = {
+        ["insert"] = table.insert,
+        ["remove"] = table.remove,
+        ["sort"] = table.sort,
+        ["concat"] = table_concat, -- Hooked
+        ["maxn"] = table.maxn
+    },
     ["math"] = math,
     ["pairs"] = pairs,
     ["ipairs"] = ipairs,
     ["select"] = select,
-    ["unpack"] = unpack,
-    ["tonumber"] = tonumber,
+    ["unpack"] = unpack, -- Hooked
+    ["tonumber"] = tonumber, -- Hooked
     ["tostring"] = tostring,
     ["type"] = type,
     ["typeof"] = typeof,
@@ -143,37 +165,39 @@ local safe_globals = {
     ["assert"] = assert,
     ["next"] = next,
     ["print"] = print,
-    ["_G"] = _G,
-    ["_VERSION"] = _VERSION
+    ["_VERSION"] = _VERSION,
+    ["rawset"] = rawset,
+    ["rawget"] = rawget,
+    -- Standard Libs
+    ["os"] = os,
+    ["io"] = io,
+    ["package"] = package,
+    ["debug"] = debug,
+    ["dofile"] = dofile,
+    ["loadfile"] = loadfile,
+    -- loadstring REMOVED to force Fallback Path
 }
 
--- Ensure _G in safe_globals is cleaned
-for k, v in pairs(_G) do
-    if not safe_globals[k] and k ~= "loaded" then
-       -- Only keep whitelisted
-    end
-end
-
+-- Set metatable for the Mock Environment
 setmetatable(MockEnv, {
     __index = function(t, k)
-        if k == "game" then
-            print("ACCESSED --> game")
-            return create_dummy("game")
-        end
-        if k == "loadstring" then
-            print("ACCESSED --> loadstring")
-            return create_dummy("loadstring")
-        end
-        if k == "script" then return create_dummy("script") end
-
-        -- Check safe globals
+        -- 1. Handle Safe Globals
         if safe_globals[k] then
             return safe_globals[k]
         end
 
-        -- Exploit environment mocks
+        -- 2. Handle specific environment functions
+        if k == "game" then
+            print("ACCESSED --> game")
+            return create_dummy("game")
+        end
+        if k == "getgenv" or k == "getrenv" or k == "getreg" then
+            return function() return MockEnv end
+        end
+
+        -- 3. Exploit environment mocks
         local exploit_funcs = {
-            "getgenv", "getrenv", "getreg", "getgc", "getinstances", "getnilinstances",
+            "getgc", "getinstances", "getnilinstances",
             "getloadedmodules", "getconnections", "firesignal", "fireclickdetector",
             "firetouchinterest", "isnetworkowner", "gethiddenproperty", "sethiddenproperty",
             "setsimulationradius", "rconsoleprint", "rconsolewarn", "rconsoleerr",
@@ -195,20 +219,28 @@ setmetatable(MockEnv, {
             end
         end
 
+        -- 4. Fallback: Return NIL (to satisfy Fallback Path logic)
         print("ACCESSED (NIL) --> " .. k)
         return nil
+    end,
+    
+    -- Log setting of globals
+    __newindex = function(t, k, v)
+        print("SET GLOBAL --> " .. tostring(k) .. " = " .. tostring(v))
+        rawset(t, k, v)
     end
 })
+
+safe_globals["_G"] = MockEnv
+safe_globals["shared"] = MockEnv
 """
 
     # 3. Find Injection Point
-    # Look for the last 'return(function' before the argument list that contains 'getfenv'
     idx_args = content.rfind("(getfenv")
     if idx_args == -1:
          idx_args = content.rfind("( getfenv")
 
     if idx_args == -1:
-         # Fallback to end
          idx_args = len(content)
 
     idx_ret = content.rfind("return(function", 0, idx_args)
@@ -254,8 +286,7 @@ setmetatable(MockEnv, {
     process = subprocess.Popen(["lua5.1", temp_file, "1"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     stdout_lines = []
-    stderr_lines = []
-
+    
     start_time = time.time()
     try:
         while True:
@@ -265,12 +296,10 @@ setmetatable(MockEnv, {
             if line:
                 decoded_line = line.decode('utf-8', errors='replace').strip()
                 stdout_lines.append(decoded_line)
-                # Print progress to console sparingly or all?
-                # Let's print just logs and constants to stdout for the user to see progress
-                if "ACCESSED" in decoded_line or "CALL_RESULT" in decoded_line or "local Constants =" in decoded_line or "URL DETECTED" in decoded_line:
+                if "ACCESSED" in decoded_line or "CALL_RESULT" in decoded_line or "local Constants =" in decoded_line or "URL DETECTED" in decoded_line or "SET GLOBAL" in decoded_line or "UNPACK CALLED" in decoded_line or "CAPTURED CHUNK" in decoded_line:
                     print(decoded_line)
 
-            if time.time() - start_time > 10: # 10 seconds timeout per script
+            if time.time() - start_time > 15:
                 print("Timeout reached.")
                 process.terminate()
                 break
@@ -282,10 +311,9 @@ setmetatable(MockEnv, {
     if out:
         for line in out.decode('utf-8', errors='replace').splitlines():
             stdout_lines.append(line.strip())
-            if "ACCESSED" in line or "CALL_RESULT" in line or "local Constants =" in line or "URL DETECTED" in line:
+            if "ACCESSED" in line or "CALL_RESULT" in line or "local Constants =" in line or "URL DETECTED" in line or "SET GLOBAL" in line or "UNPACK CALLED" in line or "CAPTURED CHUNK" in line:
                 print(line.strip())
     if err:
-        stderr_lines.append(err.decode('utf-8', errors='replace'))
         print("STDERR:", err.decode('utf-8', errors='replace'))
 
     # Process and save report
@@ -303,7 +331,7 @@ setmetatable(MockEnv, {
 
         if in_constants:
             constants_str += line + "\n"
-        elif "ACCESSED" in line or "CALL_RESULT" in line or "URL DETECTED" in line:
+        elif "ACCESSED" in line or "CALL_RESULT" in line or "URL DETECTED" in line or "SET GLOBAL" in line or "UNPACK CALLED" in line or "CAPTURED CHUNK" in line:
             trace_lines.append(line)
 
     report_file = filepath + ".report.txt"
@@ -318,9 +346,9 @@ setmetatable(MockEnv, {
 
     print(f"Report saved to {report_file}")
 
-    # Clean up
-    if os.path.exists(temp_file):
-        os.remove(temp_file)
+    # CLEANUP DISABLED TO ALLOW INSPECTION
+    # if os.path.exists(temp_file):
+    #    os.remove(temp_file)
 
 def main():
     target = "obfuscated_scripts"
@@ -330,7 +358,6 @@ def main():
     if os.path.isfile(target):
         deobfuscate_file(target)
     elif os.path.isdir(target):
-        # Recursive search
         files = glob.glob(os.path.join(target, "**/*.lua"), recursive=True)
         for file in files:
             if "temp_deob" in file or ".report.txt" in file:
