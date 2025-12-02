@@ -87,6 +87,33 @@ local function table_concat(t, sep, i, j)
     return res
 end
 
+local function recursive_tostring(v, depth)
+    if depth == nil then depth = 0 end
+    if depth > 1 then return tostring(v) end
+    
+    if real_type(v) == "string" then
+        return '"' .. v .. '"'
+    elseif real_type(v) == "table" then
+        if getmetatable(v) and getmetatable(v).__is_mock_dummy then
+            return tostring(v)
+        end
+        local parts = {}
+        local keys = {}
+        for k in pairs(v) do table.insert(keys, k) end
+        table.sort(keys, function(a,b) return tostring(a) < tostring(b) end)
+
+        for _, k in ipairs(keys) do
+            local val = v[k]
+            local k_str = tostring(k)
+            if real_type(k) == "string" then k_str = '["' .. k .. '"]' end
+            table.insert(parts, k_str .. " = " .. recursive_tostring(val, depth + 1))
+        end
+        return "{" .. real_concat(parts, ", ") .. "}"
+    else
+        return tostring(v)
+    end
+end
+
 local function create_dummy(name)
     local d = {}
     local mt = {
@@ -106,13 +133,7 @@ local function create_dummy(name)
             local arg_str = ""
             for i, v in ipairs(args) do
                 if i > 1 then arg_str = arg_str .. ", " end
-                if real_type(v) == "string" then
-                    arg_str = arg_str .. '"' .. v .. '"'
-                elseif real_type(v) == "table" then
-                     arg_str = arg_str .. tostring(v)
-                else
-                    arg_str = arg_str .. tostring(v)
-                end
+                arg_str = arg_str .. recursive_tostring(v)
             end
 
             local var_name = name:gsub("%.", "_") .. "_" .. math.random(100, 999)
