@@ -34,11 +34,36 @@ debug = nil
 dofile = nil
 loadfile = nil
 
+local real_type = type
+
+local function type(v)
+    local mt = getmetatable(v)
+    if mt and mt.__is_mock_dummy then
+        return "userdata"
+    end
+    return real_type(v)
+end
+
+local function typeof(v)
+    local mt = getmetatable(v)
+    if mt and mt.__is_mock_dummy then
+        return "Instance"
+    end
+    return type(v)
+end
+
 local function create_dummy(name)
     local d = {}
     local mt = {
+        __is_mock_dummy = true,
         __index = function(_, k)
-            -- print("ACCESSED --> " .. name .. "." .. k)
+             print("ACCESSED --> " .. name .. "." .. k)
+             if k == "HttpGet" or k == "HttpGetAsync" then
+                 return function(_, url, ...)
+                     print("URL DETECTED --> " .. tostring(url))
+                     return create_dummy("HttpGetResult")
+                 end
+            end
             return create_dummy(name .. "." .. k)
         end,
         __call = function(_, ...)
@@ -46,9 +71,9 @@ local function create_dummy(name)
             local arg_str = ""
             for i, v in ipairs(args) do
                 if i > 1 then arg_str = arg_str .. ", " end
-                if type(v) == "string" then
+                if real_type(v) == "string" then
                     arg_str = arg_str .. '"' .. v .. '"'
-                elseif type(v) == "table" then
+                elseif real_type(v) == "table" then
                      arg_str = arg_str .. tostring(v)
                 else
                     arg_str = arg_str .. tostring(v)
@@ -59,6 +84,14 @@ local function create_dummy(name)
             local var_name = name:gsub("%.", "_") .. "_" .. math.random(100, 999)
             print("CALL_RESULT --> local " .. var_name .. " = " .. name .. "(" .. arg_str .. ")")
 
+            if name:match("HttpGet") or name:match("request") then
+                for _, v in ipairs(args) do
+                    if real_type(v) == "string" and (v:match("^http") or v:match("^www")) then
+                        print("URL DETECTED --> " .. v)
+                    end
+                end
+            end
+
             if name == "loadstring" or name:match("%.loadstring$") then
                  return create_dummy("loadstring_result")
             end
@@ -68,9 +101,7 @@ local function create_dummy(name)
         __tostring = function() return name end,
         __concat = function(a, b) return tostring(a) .. tostring(b) end,
 
-        -- Arithmetic metamethods to prevent 'attempt to perform arithmetic' errors
-        -- We return dummy objects for results, which also have these metamethods.
-        -- We use a dummy string representation.
+        -- Arithmetic metamethods
         __add = function(a, b) return create_dummy("("..tostring(a).."+"..tostring(b)..")") end,
         __sub = function(a, b) return create_dummy("("..tostring(a).."-"..tostring(b)..")") end,
         __mul = function(a, b) return create_dummy("("..tostring(a).."*"..tostring(b)..")") end,
@@ -80,7 +111,6 @@ local function create_dummy(name)
         __unm = function(a) return create_dummy("-"..tostring(a)) end,
 
         -- Logic metamethods
-        -- We return false to likely terminate loops that rely on < or <=
         __lt = function(a, b) return false end,
         __le = function(a, b) return false end,
         __eq = function(a, b) return false end,
@@ -103,6 +133,7 @@ local safe_globals = {
     ["tonumber"] = tonumber,
     ["tostring"] = tostring,
     ["type"] = type,
+    ["typeof"] = typeof,
     ["pcall"] = pcall,
     ["xpcall"] = xpcall,
     ["getfenv"] = getfenv,
@@ -111,15 +142,15 @@ local safe_globals = {
     ["error"] = error,
     ["assert"] = assert,
     ["next"] = next,
-    ["print"] = print, -- allow print for debugging, but we capture stdout so it's fine
-    ["_G"] = _G, -- _G is needed but we should ensure it doesn't contain unsafe stuff
+    ["print"] = print,
+    ["_G"] = _G,
     ["_VERSION"] = _VERSION
 }
 
 -- Ensure _G in safe_globals is cleaned
 for k, v in pairs(_G) do
-    if not safe_globals[k] and k ~= "loaded" then -- Keep standard lua stuff?
-       -- Actually, we better just return safe_globals[k] if exists
+    if not safe_globals[k] and k ~= "loaded" then
+       -- Only keep whitelisted
     end
 end
 
@@ -164,8 +195,8 @@ setmetatable(MockEnv, {
             end
         end
 
-        print("ACCESSED --> " .. k)
-        return create_dummy(k)
+        print("ACCESSED (NIL) --> " .. k)
+        return nil
     end
 })
 """
@@ -236,7 +267,7 @@ setmetatable(MockEnv, {
                 stdout_lines.append(decoded_line)
                 # Print progress to console sparingly or all?
                 # Let's print just logs and constants to stdout for the user to see progress
-                if "ACCESSED -->" in decoded_line or "CALL_RESULT -->" in decoded_line or "local Constants =" in decoded_line:
+                if "ACCESSED" in decoded_line or "CALL_RESULT" in decoded_line or "local Constants =" in decoded_line or "URL DETECTED" in decoded_line:
                     print(decoded_line)
 
             if time.time() - start_time > 10: # 10 seconds timeout per script
@@ -251,7 +282,7 @@ setmetatable(MockEnv, {
     if out:
         for line in out.decode('utf-8', errors='replace').splitlines():
             stdout_lines.append(line.strip())
-            if "ACCESSED -->" in line or "CALL_RESULT -->" in line or "local Constants =" in line:
+            if "ACCESSED" in line or "CALL_RESULT" in line or "local Constants =" in line or "URL DETECTED" in line:
                 print(line.strip())
     if err:
         stderr_lines.append(err.decode('utf-8', errors='replace'))
@@ -272,7 +303,7 @@ setmetatable(MockEnv, {
 
         if in_constants:
             constants_str += line + "\n"
-        elif "ACCESSED -->" in line or "CALL_RESULT -->" in line:
+        elif "ACCESSED" in line or "CALL_RESULT" in line or "URL DETECTED" in line:
             trace_lines.append(line)
 
     report_file = filepath + ".report.txt"
