@@ -1,0 +1,9 @@
+--- DEOBFUSCATION REPORT ---
+File: obfuscated_scripts/hard/obfuscated_script-1763795101768.lua
+
+--- TRACE ---
+ACCESSED --> kZJQelOaAErQK
+ACCESSED --> nuJjtn1eMbItG
+
+--- CONSTANTS ---
+local Constants = { [1] = "UFIaxoZ4Vowj", [2] = "NHCXPctWqPVPY2F", [3] = "concat", [4] = "l1", [5] = "1Q�~4j�/�", [6] = "p$�SX", [7] = "char", [8] = "��A�O3��", [9] = "SetCore", [10] = "��e��", [11] = "℈8���P", [12] = "e01F9gZETic9lL", [13] = "Za�", [14] = ":(%d*):", [15] = "ZMCEZOSCNnsWr", [16] = "��\"�ć�N�<�}T", [17] = "��̙5e��@k�j", [18] = "nuJjtn1eMbItG", [19] = "__index", [20] = "__gc", [21] = "�Ց���D?2�\000���", [22] = "+", [23] = "���_ɴ", [24] = "�3q�SĬ��.��X��", [25] = "E*U\r��v�⑂", [26] = "error", [27] = "oz", [28] = "WUYgky9YCoSIBG", [29] = "setmetatable", [30] = "__metatable", [31] = "�#�ڕC", [32] = "W9urlVK5", [33] = "svDsvOYc7T6Bv", [34] = "�M���", [35] = "髡4Q", [36] = "len", [37] = "тG��", [38] = "zEcgKofucvjY", [39] = "table", [40] = "JpuCHro8JQJb", [41] = "kZJQelOaAErQK", [42] = "scpDmkOdhaYX9y", [43] = "l2", [44] = "P���*��", [45] = "pcall", [46] = "���2EEcGgݨp", [47] = "unpack", [48] = "dvjH1nwNKZmsN", [49] = "3U3y3pXLICIgY", [50] = "oAV4bYy4fTNz", [51] = "wdS1Ap6gB9ndp", [52] = "wait", [53] = "pqQyYv42e2O1", [54] = "random", [55] = "qW��7", [56] = "floor", [57] = "n0P12CaxumwhDi", [58] = "string", [59] = "tonumber", [60] = "Kn�;h�^��X�N�=v�", [61] = "��", [62] = "Tamper Detected!", [63] = ":", [64] = "����=", [65] = "�Sۼ����Ǆ3lH", [66] = "s�wŘ", [67] = "ik4", [68] = "game", [69] = "�{�7Kבz", [70] = "remove", [71] = "r]JU�ؠb.", [72] = "YNPAhcDiQsDe", [73] = "�6�O亚�(", [74] = "byte", [75] = "�,*-_0�{K�I�޶?��C$�h���\"��Ns�������f�", [76] = "math", [77] = "lhItNe7Eum4yY7", [78] = "�n���", [79] = "gsub", [80] = "I�T", [81] = "�ְ������", [82] = "", [83] = "�,f7���ȵ���", [84] = "tostring", [85] = "gmatch", [86] = "__len", [87] = "dgGKAOPFmiRGn", [88] = "�z\\V", [89] = "H7YXMGTIdjyWC", [90] = "Uy��Q�Ys�", }

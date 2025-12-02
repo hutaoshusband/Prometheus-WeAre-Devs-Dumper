@@ -1,0 +1,8 @@
+--- DEOBFUSCATION REPORT ---
+File: obfuscated_scripts/easy/obfuscated_script-1763790918480.lua
+
+--- TRACE ---
+
+--- CONSTANTS ---
+local Constants = { [1] = "concat", [2] = "1llIHdtqthhKTf", [3] = "tonumber", [4] = "__gc", [5] = "WRgPSGxdQ93H76", [6] = "nhSNOIDQD67K", [7] = "byte", [8] = "math", [9] = "z֯�����", [10] = "\
+*��", [11] = "gmatch", [12] = "Tamper Detected!", [13] = "", [14] = "a1xTvMzt4HoWh", [15] = "len", [16] = "QFLiy1zWEMVisk", [17] = "random", [18] = "xEfQpDpdU", [19] = ":(%d*):", [20] = ":", [21] = "table", [22] = "4Hu", [23] = "setmetatable", [24] = "char", [25] = "__index", [26] = "tvrIPTJsF4L9mt", [27] = "game", [28] = "SetCore", [29] = "ByWD3PNpgUSLCa", [30] = "tostring", [31] = "Oz�BɞCanOkպ�33L��tVp��Ad9", [32] = "__len", [33] = "�η�ap���", [34] = "__metatable", [35] = "floor", [36] = "string", [37] = "unpack", [38] = "pcall", [39] = "Y5Rz0r1p4aGh", [40] = "error", [41] = "x���", [42] = "<>ZR��o7���,", [43] = "tlUtuSUZRyIFxr", [44] = "RzvYES8JWodc", [45] = "gsub", [46] = "l2", [47] = "l1", [48] = "lfRSUqjLyjBxY", [49] = "�7��", [50] = "remove", [51] = "fXezlJFv6Jsxr", [52] = "Lr4szMk", }
