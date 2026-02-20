@@ -8,6 +8,11 @@ import math
 
 def deobfuscate_file(filepath):
     print(f"Processing {filepath}...")
+    
+    # Skip already deobfuscated files
+    if ".deobf." in filepath or ".report." in filepath:
+        return
+        
     try:
         with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
             content = f.read()
@@ -23,12 +28,32 @@ def deobfuscate_file(filepath):
     var_name = match.group(1)
 
     # 2. Prepare Mock Environment Code
+    # This is heavily improved to:
+    #   - Track __newindex on dummies (property sets like obj.Parent = x)
+    #   - Limit loop iterations to prevent infinite trace
+    #   - Better closure execution with deeper nesting
+    #   - Detect and log more patterns
     mock_env_code = r"""
 -- Standard Lua Libraries (Enabled)
 local real_type = type
 local real_tonumber = tonumber
 local real_unpack = unpack
 local real_concat = table.concat
+local real_tostring = tostring
+local real_print = print
+
+-- Loop limiter: prevents infinite while/for loops in obfuscated code
+local _LOOP_COUNTER = 0
+local _MAX_LOOPS = 150
+local _LOOP_BODIES = {}
+
+local function _check_loop()
+    _LOOP_COUNTER = _LOOP_COUNTER + 1
+    if _LOOP_COUNTER > _MAX_LOOPS then
+        return false -- Signal to break
+    end
+    return true
+end
 
 local function type(v)
     local mt = getmetatable(v)
@@ -56,8 +81,6 @@ end
 -- Hook unpack to capture the chunk
 local function unpack(t, i, j)
     if real_type(t) == "table" then
-        -- Check if it looks like a bytecode table (numeric keys, string/number values)
-        -- Or a table of strings
         local looks_like_chunk = true
         for k, v in pairs(t) do
             if real_type(k) ~= "number" then looks_like_chunk = false break end
@@ -65,7 +88,6 @@ local function unpack(t, i, j)
         
         if looks_like_chunk and #t > 0 then
             print("UNPACK CALLED WITH TABLE (Potential Chunk): size=" .. #t)
-            -- Try to concat and print
             local success, res = pcall(real_concat, t, ",")
             if success then
                 print("CAPTURED CHUNK STRING: " .. res)
@@ -89,10 +111,20 @@ end
 
 local function recursive_tostring(v, depth)
     if depth == nil then depth = 0 end
-    if depth > 1 then return tostring(v) end
+    if depth > 2 then return tostring(v) end
     
     if real_type(v) == "string" then
         return '"' .. v .. '"'
+    elseif real_type(v) == "number" then
+        -- Clean up numbers: show integers as integers
+        if v == math.floor(v) and v >= -2147483648 and v <= 2147483647 then
+            return tostring(math.floor(v))
+        end
+        return tostring(v)
+    elseif real_type(v) == "boolean" then
+        return tostring(v)
+    elseif v == nil then
+        return "nil"
     elseif real_type(v) == "table" then
         if getmetatable(v) and getmetatable(v).__is_mock_dummy then
             return tostring(v)
@@ -109,6 +141,8 @@ local function recursive_tostring(v, depth)
             table.insert(parts, k_str .. " = " .. recursive_tostring(val, depth + 1))
         end
         return "{" .. real_concat(parts, ", ") .. "}"
+    elseif real_type(v) == "function" then
+        return tostring(v)
     else
         return tostring(v)
     end
@@ -128,6 +162,11 @@ local function create_dummy(name)
             end
             return create_dummy(name .. "." .. k)
         end,
+        __newindex = function(_, k, v)
+            -- Log property assignments on dummy objects!
+            local val_str = recursive_tostring(v, 0)
+            print("PROP_SET --> " .. name .. "." .. k .. " = " .. val_str)
+        end,
         __call = function(_, ...)
             local args = {...}
             local arg_str = ""
@@ -139,11 +178,16 @@ local function create_dummy(name)
             local var_name = name:gsub("%.", "_") .. "_" .. math.random(100, 999)
             print("CALL_RESULT --> local " .. var_name .. " = " .. name .. "(" .. arg_str .. ")")
             
+            -- Execute closure callbacks with deeper context
             for i, v in ipairs(args) do
                 if real_type(v) == "function" then
                     print("--- ENTERING CLOSURE FOR " .. name .. " ---")
-                    local success, err = pcall(v, create_dummy("arg1"), create_dummy("arg2"), create_dummy("arg3"))
-                    if not success then print("-- CLOSURE ERROR: " .. tostring(err)) end
+                    local success, err = pcall(v, 
+                        create_dummy("arg1"), create_dummy("arg2"), 
+                        create_dummy("arg3"), create_dummy("arg4"))
+                    if not success then 
+                        print("-- CLOSURE ERROR: " .. tostring(err)) 
+                    end
                     print("--- EXITING CLOSURE FOR " .. name .. " ---")
                 end
             end
@@ -254,7 +298,9 @@ setmetatable(MockEnv, {
             "appendfile", "loadfile", "listfiles", "isfile", "isfolder", "delfile",
             "delfolder", "dofile", "bit", "bit32", 
             "Vector2", "Vector3", "CFrame", "UDim2", "Color3", "Instance", "Ray",
-            "task", "coroutine", "Delay", "delay", "Spawn", "spawn", "Wait", "wait", "workspace", "Workspace"
+            "Enum", "BrickColor", "NumberRange", "NumberSequence", "ColorSequence",
+            "task", "coroutine", "Delay", "delay", "Spawn", "spawn", "Wait", "wait", 
+            "workspace", "Workspace", "tick", "time", "elapsedTime", "utf8"
         }
         for _, name in ipairs(exploit_funcs) do
             if k == name then
@@ -270,7 +316,15 @@ setmetatable(MockEnv, {
     
     -- Log setting of globals
     __newindex = function(t, k, v)
-        print("SET GLOBAL --> " .. tostring(k) .. " = " .. tostring(v))
+        local val_str = ""
+        if real_type(v) == "string" then
+            val_str = '"' .. v .. '"'
+        elseif real_type(v) == "number" or real_type(v) == "boolean" then
+            val_str = tostring(v)
+        else
+            val_str = tostring(v)
+        end
+        print("SET GLOBAL --> " .. tostring(k) .. " = " .. val_str)
         rawset(t, k, v)
     end
 })
@@ -331,6 +385,14 @@ safe_globals["shared"] = MockEnv
 
     stdout_lines = []
     
+    # Relevant line prefixes we want to capture
+    RELEVANT_PREFIXES = (
+        "ACCESSED", "CALL_RESULT", "local Constants =", 
+        "URL DETECTED", "SET GLOBAL", "UNPACK CALLED", 
+        "CAPTURED CHUNK", "CLOSURE", "TRACE_PRINT", 
+        "PROP_SET", "LOADSTRING"
+    )
+    
     start_time = time.time()
     try:
         while True:
@@ -340,10 +402,10 @@ safe_globals["shared"] = MockEnv
             if line:
                 decoded_line = line.decode('utf-8', errors='replace').strip()
                 stdout_lines.append(decoded_line)
-                if "ACCESSED" in decoded_line or "CALL_RESULT" in decoded_line or "local Constants =" in decoded_line or "URL DETECTED" in decoded_line or "SET GLOBAL" in decoded_line or "UNPACK CALLED" in decoded_line or "CAPTURED CHUNK" in decoded_line or "CLOSURE" in decoded_line or "TRACE_PRINT" in decoded_line:
+                if any(prefix in decoded_line for prefix in RELEVANT_PREFIXES):
                     print(decoded_line)
 
-            if time.time() - start_time > 15:
+            if time.time() - start_time > 20:
                 print("Timeout reached.")
                 process.terminate()
                 break
@@ -355,10 +417,12 @@ safe_globals["shared"] = MockEnv
     if out:
         for line in out.decode('utf-8', errors='replace').splitlines():
             stdout_lines.append(line.strip())
-            if "ACCESSED" in line or "CALL_RESULT" in line or "local Constants =" in line or "URL DETECTED" in line or "SET GLOBAL" in line or "UNPACK CALLED" in line or "CAPTURED CHUNK" in line:
+            if any(prefix in line for prefix in RELEVANT_PREFIXES):
                 print(line.strip())
     if err:
-        print("STDERR:", err.decode('utf-8', errors='replace'))
+        stderr_text = err.decode('utf-8', errors='replace')
+        if stderr_text.strip():
+            print("STDERR:", stderr_text)
 
     # Process and save report
     constants_str = ""
@@ -375,7 +439,7 @@ safe_globals["shared"] = MockEnv
 
         if in_constants:
             constants_str += line + "\n"
-        elif "ACCESSED" in line or "CALL_RESULT" in line or "URL DETECTED" in line or "SET GLOBAL" in line or "UNPACK CALLED" in line or "CAPTURED CHUNK" in line or "CLOSURE" in line or "TRACE_PRINT" in line:
+        elif any(prefix in line for prefix in RELEVANT_PREFIXES):
             trace_lines.append(line)
 
     report_file = filepath + ".report.txt"
@@ -393,9 +457,14 @@ safe_globals["shared"] = MockEnv
     # Automatically convert trace to lua
     try:
         import trace_to_lua
+        # Reload the module to pick up any changes
+        import importlib
+        importlib.reload(trace_to_lua)
         trace_to_lua.parse_trace(report_file)
     except Exception as e:
         print(f"Failed to convert trace: {e}")
+        import traceback
+        traceback.print_exc()
 
     # CLEANUP
     if os.path.exists(temp_file):
@@ -411,9 +480,9 @@ def main():
     if os.path.isfile(target):
         deobfuscate_file(target)
     elif os.path.isdir(target):
-        files = glob.glob(os.path.join(target, "**/*.lua"), recursive=True)
-        for file in files:
-            if "temp_deob" in file or ".report.txt" in file:
+        files = glob.glob(os.path.join(target, "*.lua"))
+        for file in sorted(files):
+            if "temp_deob" in file or ".report.txt" in file or ".deobf." in file:
                 continue
             deobfuscate_file(file)
             print("-" * 40)
