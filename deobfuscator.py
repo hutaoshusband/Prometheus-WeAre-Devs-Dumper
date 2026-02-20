@@ -9,7 +9,7 @@ import math
 def deobfuscate_file(filepath):
     print(f"Processing {filepath}...")
     try:
-        with open(filepath, 'r') as f:
+        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
             content = f.read()
     except Exception as e:
         print(f"Error reading {filepath}: {e}")
@@ -66,7 +66,7 @@ local function unpack(t, i, j)
         if looks_like_chunk and #t > 0 then
             print("UNPACK CALLED WITH TABLE (Potential Chunk): size=" .. #t)
             -- Try to concat and print
-            local success, res = pcall(real_concat, t)
+            local success, res = pcall(real_concat, t, ",")
             if success then
                 print("CAPTURED CHUNK STRING: " .. res)
                 if res:match("http") or res:match("www") then
@@ -138,6 +138,16 @@ local function create_dummy(name)
 
             local var_name = name:gsub("%.", "_") .. "_" .. math.random(100, 999)
             print("CALL_RESULT --> local " .. var_name .. " = " .. name .. "(" .. arg_str .. ")")
+            
+            for i, v in ipairs(args) do
+                if real_type(v) == "function" then
+                    print("--- ENTERING CLOSURE FOR " .. name .. " ---")
+                    local success, err = pcall(v, create_dummy("arg1"), create_dummy("arg2"), create_dummy("arg3"))
+                    if not success then print("-- CLOSURE ERROR: " .. tostring(err)) end
+                    print("--- EXITING CLOSURE FOR " .. name .. " ---")
+                end
+            end
+            
             return create_dummy(var_name)
         end,
         __tostring = function() return name end,
@@ -185,7 +195,12 @@ local safe_globals = {
     ["error"] = error,
     ["assert"] = assert,
     ["next"] = next,
-    ["print"] = print,
+    ["print"] = function(...)
+        local args = {...}
+        local parts = {}
+        for i,v in ipairs(args) do table.insert(parts, tostring(v)) end
+        print("TRACE_PRINT --> " .. table.concat(parts, "\t"))
+    end,
     ["_VERSION"] = _VERSION,
     ["rawset"] = rawset,
     ["rawget"] = rawget,
@@ -196,7 +211,13 @@ local safe_globals = {
     ["debug"] = debug,
     ["dofile"] = dofile,
     ["loadfile"] = loadfile,
-    -- loadstring REMOVED to force Fallback Path
+    ["loadstring"] = function(s) 
+        print("LOADSTRING DETECTED: size=" .. tostring(#s)) 
+        print("LOADSTRING CONTENT START")
+        print(s)
+        print("LOADSTRING CONTENT END")
+        return function() print("DUMMY FUNC CALLED") end
+    end
 }
 
 -- Set metatable for the Mock Environment
@@ -231,7 +252,9 @@ setmetatable(MockEnv, {
             "mouse1press", "mouse1release", "mousescroll", "mousemoverel", "mousemoveabs",
             "hookmetamethod", "getcallingscript", "makefolder", "writefile", "readfile",
             "appendfile", "loadfile", "listfiles", "isfile", "isfolder", "delfile",
-            "delfolder", "dofile", "bit", "bit32"
+            "delfolder", "dofile", "bit", "bit32", 
+            "Vector2", "Vector3", "CFrame", "UDim2", "Color3", "Instance", "Ray",
+            "task", "coroutine", "Delay", "delay", "Spawn", "spawn", "Wait", "wait", "workspace", "Workspace"
         }
         for _, name in ipairs(exploit_funcs) do
             if k == name then
@@ -298,13 +321,13 @@ safe_globals["shared"] = MockEnv
         new_content = re.sub(r'getfenv\s+and\s+getfenv\(\)or\s+_ENV', 'MockEnv', new_content)
 
     temp_file = "temp_deob.lua"
-    with open(temp_file, 'w') as f:
+    with open(temp_file, 'w', encoding='utf-8') as f:
         f.write(new_content)
 
     print(f"Executing deobfuscation for {filepath}...")
 
     # Pass a dummy argument '1' to satisfy 'unpack(args)' logic if any
-    process = subprocess.Popen(["lua5.1", temp_file, "1"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process = subprocess.Popen(["lua_bin/lua5.1.exe", temp_file, "1"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     stdout_lines = []
     
@@ -317,7 +340,7 @@ safe_globals["shared"] = MockEnv
             if line:
                 decoded_line = line.decode('utf-8', errors='replace').strip()
                 stdout_lines.append(decoded_line)
-                if "ACCESSED" in decoded_line or "CALL_RESULT" in decoded_line or "local Constants =" in decoded_line or "URL DETECTED" in decoded_line or "SET GLOBAL" in decoded_line or "UNPACK CALLED" in decoded_line or "CAPTURED CHUNK" in decoded_line:
+                if "ACCESSED" in decoded_line or "CALL_RESULT" in decoded_line or "local Constants =" in decoded_line or "URL DETECTED" in decoded_line or "SET GLOBAL" in decoded_line or "UNPACK CALLED" in decoded_line or "CAPTURED CHUNK" in decoded_line or "CLOSURE" in decoded_line or "TRACE_PRINT" in decoded_line:
                     print(decoded_line)
 
             if time.time() - start_time > 15:
@@ -352,11 +375,11 @@ safe_globals["shared"] = MockEnv
 
         if in_constants:
             constants_str += line + "\n"
-        elif "ACCESSED" in line or "CALL_RESULT" in line or "URL DETECTED" in line or "SET GLOBAL" in line or "UNPACK CALLED" in line or "CAPTURED CHUNK" in line:
+        elif "ACCESSED" in line or "CALL_RESULT" in line or "URL DETECTED" in line or "SET GLOBAL" in line or "UNPACK CALLED" in line or "CAPTURED CHUNK" in line or "CLOSURE" in line or "TRACE_PRINT" in line:
             trace_lines.append(line)
 
     report_file = filepath + ".report.txt"
-    with open(report_file, 'w') as f:
+    with open(report_file, 'w', encoding='utf-8') as f:
         f.write("--- DEOBFUSCATION REPORT ---\n")
         f.write(f"File: {filepath}\n\n")
         f.write("--- TRACE ---\n")
@@ -367,9 +390,18 @@ safe_globals["shared"] = MockEnv
 
     print(f"Report saved to {report_file}")
 
-    # CLEANUP DISABLED TO ALLOW INSPECTION
-    # if os.path.exists(temp_file):
-    #    os.remove(temp_file)
+    # Automatically convert trace to lua
+    try:
+        import trace_to_lua
+        trace_to_lua.parse_trace(report_file)
+    except Exception as e:
+        print(f"Failed to convert trace: {e}")
+
+    # CLEANUP
+    if os.path.exists(temp_file):
+        os.remove(temp_file)
+    if os.path.exists(report_file):
+        os.remove(report_file)
 
 def main():
     target = "obfuscated_scripts"
