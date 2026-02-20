@@ -26,7 +26,6 @@ def deobfuscate_file(filepath):
     var_name = match.group(1)
 
     mock_env_code = r"""
--- Standard Lua Libraries (Enabled)
 local real_type = type
 local real_tonumber = tonumber
 local real_unpack = unpack
@@ -34,7 +33,6 @@ local real_concat = table.concat
 local real_tostring = tostring
 local real_print = print
 
--- Loop limiter: prevents infinite while/for loops in obfuscated code
 local _LOOP_COUNTER = 0
 local _MAX_LOOPS = 150
 local _LOOP_BODIES = {}
@@ -42,7 +40,7 @@ local _LOOP_BODIES = {}
 local function _check_loop()
     _LOOP_COUNTER = _LOOP_COUNTER + 1
     if _LOOP_COUNTER > _MAX_LOOPS then
-        return false -- Signal to break
+        return false
     end
     return true
 end
@@ -70,7 +68,6 @@ local function tonumber(v, base)
     return real_tonumber(v, base)
 end
 
--- Hook unpack to capture the chunk
 local function unpack(t, i, j)
     if real_type(t) == "table" then
         local looks_like_chunk = true
@@ -92,7 +89,6 @@ local function unpack(t, i, j)
     return real_unpack(t, i, j)
 end
 
--- Hook table.concat just in case
 local function table_concat(t, sep, i, j)
     local res = real_concat(t, sep, i, j)
     if real_type(res) == "string" and (res:match("http") or res:match("www")) then
@@ -108,7 +104,6 @@ local function recursive_tostring(v, depth)
     if real_type(v) == "string" then
         return '"' .. v .. '"'
     elseif real_type(v) == "number" then
-        -- Clean up numbers: show integers as integers
         if v == math.floor(v) and v >= -2147483648 and v <= 2147483647 then
             return tostring(math.floor(v))
         end
@@ -155,7 +150,6 @@ local function create_dummy(name)
             return create_dummy(name .. "." .. k)
         end,
         __newindex = function(_, k, v)
-            -- Log property assignments on dummy objects!
             local val_str = recursive_tostring(v, 0)
             print("PROP_SET --> " .. name .. "." .. k .. " = " .. val_str)
         end,
@@ -170,7 +164,6 @@ local function create_dummy(name)
             local var_name = name:gsub("%.", "_") .. "_" .. math.random(100, 999)
             print("CALL_RESULT --> local " .. var_name .. " = " .. name .. "(" .. arg_str .. ")")
             
-            -- Execute closure callbacks with deeper context
             for i, v in ipairs(args) do
                 if real_type(v) == "function" then
                     print("--- ENTERING CLOSURE FOR " .. name .. " ---")
@@ -198,10 +191,40 @@ local function create_dummy(name)
         __lt = function(a, b) return false end,
         __le = function(a, b) return false end,
         __eq = function(a, b) return false end,
-        __len = function(a) return 0 end,
+        __len = function(a) return 2 end,
     }
     setmetatable(d, mt)
     return d
+end
+
+local function mock_pairs(t)
+    local mt = getmetatable(t)
+    if mt and mt.__is_mock_dummy then
+        local i = 0
+        return function(...)
+            i = i + 1
+            if i <= 1 then
+                return i, create_dummy(tostring(t).."_v"..i)
+            end
+            return nil
+        end
+    end
+    return pairs(t)
+end
+
+local function mock_ipairs(t)
+    local mt = getmetatable(t)
+    if mt and mt.__is_mock_dummy then
+        local i = 0
+        return function(...)
+            i = i + 1
+            if i <= 1 then
+                return i, create_dummy(tostring(t).."_v"..i)
+            end
+            return nil
+        end
+    end
+    return ipairs(t)
 end
 
 local MockEnv = {}
@@ -211,15 +234,15 @@ local safe_globals = {
         ["insert"] = table.insert,
         ["remove"] = table.remove,
         ["sort"] = table.sort,
-        ["concat"] = table_concat, -- Hooked
+        ["concat"] = table_concat,
         ["maxn"] = table.maxn
     },
     ["math"] = math,
-    ["pairs"] = pairs,
-    ["ipairs"] = ipairs,
+    ["pairs"] = mock_pairs,
+    ["ipairs"] = mock_ipairs,
     ["select"] = select,
-    ["unpack"] = unpack, -- Hooked
-    ["tonumber"] = tonumber, -- Hooked
+    ["unpack"] = unpack,
+    ["tonumber"] = tonumber,
     ["tostring"] = tostring,
     ["type"] = type,
     ["typeof"] = typeof,
@@ -240,7 +263,6 @@ local safe_globals = {
     ["_VERSION"] = _VERSION,
     ["rawset"] = rawset,
     ["rawget"] = rawget,
-    -- Standard Libs
     ["os"] = os,
     ["io"] = io,
     ["package"] = package,
@@ -256,15 +278,12 @@ local safe_globals = {
     end
 }
 
--- Set metatable for the Mock Environment
 setmetatable(MockEnv, {
     __index = function(t, k)
-        -- 1. Handle Safe Globals
         if safe_globals[k] then
             return safe_globals[k]
         end
 
-        -- 2. Handle specific environment functions
         if k == "game" then
             print("ACCESSED --> game")
             return create_dummy("game")
@@ -273,7 +292,6 @@ setmetatable(MockEnv, {
             return function() return MockEnv end
         end
 
-        -- 3. Exploit environment mocks
         local exploit_funcs = {
             "getgc", "getinstances", "getnilinstances",
             "getloadedmodules", "getconnections", "firesignal", "fireclickdetector",
@@ -301,12 +319,10 @@ setmetatable(MockEnv, {
             end
         end
 
-        -- 4. Fallback: Return NIL (to satisfy Fallback Path logic)
         print("ACCESSED (NIL) --> " .. k)
         return nil
     end,
     
-    -- Log setting of globals
     __newindex = function(t, k, v)
         local val_str = ""
         if real_type(v) == "string" then
@@ -325,7 +341,6 @@ safe_globals["_G"] = MockEnv
 safe_globals["shared"] = MockEnv
 """
 
-    # 3. Find Injection Point
     idx_args = content.rfind("(getfenv")
     if idx_args == -1:
          idx_args = content.rfind("( getfenv")
@@ -338,7 +353,6 @@ safe_globals["shared"] = MockEnv
         print(f"Could not find return(function injection point in {filepath}.")
         return
 
-    # Dumper Code
     dumper_code = f"""
     print("--- CONSTANTS START ---")
     if {var_name} then
@@ -360,7 +374,6 @@ safe_globals["shared"] = MockEnv
 
     new_content = mock_env_code + content[:idx_ret] + dumper_code + content[idx_ret:]
 
-    # replace the argument
     if "getfenv and getfenv()or _ENV" in new_content:
         new_content = new_content.replace("getfenv and getfenv()or _ENV", "MockEnv")
     else:
@@ -372,12 +385,10 @@ safe_globals["shared"] = MockEnv
 
     print(f"Executing deobfuscation for {filepath}...")
 
-    # pass a dummy argument '1' to satisfy 'unpack(args)' logic if any
     process = subprocess.Popen(["lua_bin/lua5.1.exe", temp_file, "1"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     stdout_lines = []
     
-    # relevant line prefixes we want to capture
     RELEVANT_PREFIXES = (
         "ACCESSED", "CALL_RESULT", "local Constants =", 
         "URL DETECTED", "SET GLOBAL", "UNPACK CALLED", 
@@ -445,7 +456,6 @@ safe_globals["shared"] = MockEnv
 
     print(f"Report saved to {report_file}")
 
-    # Automatically convert trace to lua
     try:
         import trace_to_lua
         import importlib
@@ -456,11 +466,31 @@ safe_globals["shared"] = MockEnv
         import traceback
         traceback.print_exc()
 
-    # CLEANUP
     if os.path.exists(temp_file):
         os.remove(temp_file)
-    if os.path.exists(report_file):
-        os.remove(report_file)
+    #if os.path.exists(report_file):
+    #    os.remove(report_file)
+
+def main():
+    target = "obfuscated_scripts"
+    if len(sys.argv) > 1:
+        target = sys.argv[1]
+
+    if os.path.isfile(target):
+        deobfuscate_file(target)
+    elif os.path.isdir(target):
+        files = glob.glob(os.path.join(target, "*.lua"))
+        for file in sorted(files):
+            if "temp_deob" in file or ".report.txt" in file or ".deobf." in file:
+                continue
+            deobfuscate_file(file)
+            print("-" * 40)
+    else:
+        print("Invalid path")
+
+if __name__ == "__main__":
+    main()
+
 
 def main():
     target = "obfuscated_scripts"
