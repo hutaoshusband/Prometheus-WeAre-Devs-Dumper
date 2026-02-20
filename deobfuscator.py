@@ -9,7 +9,6 @@ import math
 def deobfuscate_file(filepath):
     print(f"Processing {filepath}...")
     
-    # Skip already deobfuscated files
     if ".deobf." in filepath or ".report." in filepath:
         return
         
@@ -20,19 +19,12 @@ def deobfuscate_file(filepath):
         print(f"Error reading {filepath}: {e}")
         return
 
-    # 1. Identify Variable Name for String Table
     match = re.search(r'local ([a-zA-Z0-9_]+)=\{"', content)
     if not match:
         print(f"Could not identify string table variable in {filepath}.")
         return
     var_name = match.group(1)
 
-    # 2. Prepare Mock Environment Code
-    # This is heavily improved to:
-    #   - Track __newindex on dummies (property sets like obj.Parent = x)
-    #   - Limit loop iterations to prevent infinite trace
-    #   - Better closure execution with deeper nesting
-    #   - Detect and log more patterns
     mock_env_code = r"""
 -- Standard Lua Libraries (Enabled)
 local real_type = type
@@ -368,7 +360,7 @@ safe_globals["shared"] = MockEnv
 
     new_content = mock_env_code + content[:idx_ret] + dumper_code + content[idx_ret:]
 
-    # Replace the argument
+    # replace the argument
     if "getfenv and getfenv()or _ENV" in new_content:
         new_content = new_content.replace("getfenv and getfenv()or _ENV", "MockEnv")
     else:
@@ -380,12 +372,12 @@ safe_globals["shared"] = MockEnv
 
     print(f"Executing deobfuscation for {filepath}...")
 
-    # Pass a dummy argument '1' to satisfy 'unpack(args)' logic if any
+    # pass a dummy argument '1' to satisfy 'unpack(args)' logic if any
     process = subprocess.Popen(["lua_bin/lua5.1.exe", temp_file, "1"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     stdout_lines = []
     
-    # Relevant line prefixes we want to capture
+    # relevant line prefixes we want to capture
     RELEVANT_PREFIXES = (
         "ACCESSED", "CALL_RESULT", "local Constants =", 
         "URL DETECTED", "SET GLOBAL", "UNPACK CALLED", 
@@ -424,7 +416,6 @@ safe_globals["shared"] = MockEnv
         if stderr_text.strip():
             print("STDERR:", stderr_text)
 
-    # Process and save report
     constants_str = ""
     trace_lines = []
 
@@ -457,7 +448,6 @@ safe_globals["shared"] = MockEnv
     # Automatically convert trace to lua
     try:
         import trace_to_lua
-        # Reload the module to pick up any changes
         import importlib
         importlib.reload(trace_to_lua)
         trace_to_lua.parse_trace(report_file)
