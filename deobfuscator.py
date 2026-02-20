@@ -319,6 +319,7 @@ setmetatable(MockEnv, {
             end
         end
 
+        -- 4. Fallback: Return NIL (to satisfy Fallback Path logic)
         print("ACCESSED (NIL) --> " .. k)
         return nil
     end,

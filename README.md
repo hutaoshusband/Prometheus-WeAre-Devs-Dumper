@@ -1,4 +1,4 @@
-# Prometheus WeAreDevs Dumper
+# Prometheus WeAreDevs Dumper.. actually? Full Deobfuscator!
 
 A trace-based deobfuscator designed to reconstruct the original logic and string constants from Roblox scripts, particularly those obfuscated on WeAreDevs and similar platforms. It simulates a custom mock environment to hook environment calls and translates traces back into readable Lua code.
 
