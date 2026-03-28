@@ -33,6 +33,7 @@ local real_concat = table.concat
 local real_tostring = tostring
 local real_print = print
 
+local _WAIT_COUNT = 0
 local _LOOP_COUNTER = 0
 local _MAX_LOOPS = 150
 local _LOOP_BODIES = {}
@@ -163,6 +164,13 @@ local function create_dummy(name)
 
             local var_name = name:gsub("%.", "_") .. "_" .. math.random(100, 999)
             print("CALL_RESULT --> local " .. var_name .. " = " .. name .. "(" .. arg_str .. ")")
+            if name == "task.wait" or name == "wait" then
+                _WAIT_COUNT = _WAIT_COUNT + 1
+                if _WAIT_COUNT > 10 then
+                     error("Too many waits!")
+                end
+            end
+
             
             for i, v in ipairs(args) do
                 if real_type(v) == "function" then
