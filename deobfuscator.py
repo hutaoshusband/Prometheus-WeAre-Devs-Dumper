@@ -5,6 +5,151 @@ import time
 import os
 import glob
 import math
+import tempfile
+
+
+COMPOUND_ASSIGNMENT_OPERATORS = ("+=", "-=", "*=", "/=", "%=", "..=")
+
+
+def _configure_text_streams():
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+def _find_compound_lhs_start(content, operator_index):
+    idx = operator_index - 1
+    while idx >= 0 and content[idx].isspace():
+        idx -= 1
+
+    while idx >= 0 and content[idx] == "]":
+        bracket_depth = 1
+        idx -= 1
+        while idx >= 0 and bracket_depth > 0:
+            if content[idx] == "]":
+                bracket_depth += 1
+            elif content[idx] == "[":
+                bracket_depth -= 1
+            idx -= 1
+
+    while idx >= 0 and (content[idx].isalnum() or content[idx] == "_"):
+        idx -= 1
+
+    while idx >= 0 and content[idx] == ".":
+        idx -= 1
+        while idx >= 0 and content[idx] == "]":
+            bracket_depth = 1
+            idx -= 1
+            while idx >= 0 and bracket_depth > 0:
+                if content[idx] == "]":
+                    bracket_depth += 1
+                elif content[idx] == "[":
+                    bracket_depth -= 1
+                idx -= 1
+        while idx >= 0 and (content[idx].isalnum() or content[idx] == "_"):
+            idx -= 1
+
+    return idx + 1
+
+
+def _find_compound_rhs_end(content, rhs_start):
+    idx = rhs_start
+    length = len(content)
+    bracket_depth = 0
+    paren_depth = 0
+    brace_depth = 0
+    quote = None
+
+    while idx < length and content[idx].isspace():
+        idx += 1
+
+    while idx < length:
+        char = content[idx]
+
+        if quote:
+            if char == "\\":
+                idx += 2
+                continue
+            if char == quote:
+                quote = None
+            idx += 1
+            continue
+
+        if char in ("'", '"'):
+            quote = char
+            idx += 1
+            continue
+
+        if char == "[":
+            bracket_depth += 1
+        elif char == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+        elif char == "(":
+            paren_depth += 1
+        elif char == ")":
+            if paren_depth == 0 and bracket_depth == 0 and brace_depth == 0:
+                break
+            paren_depth = max(0, paren_depth - 1)
+        elif char == "{":
+            brace_depth += 1
+        elif char == "}":
+            if brace_depth == 0 and bracket_depth == 0 and paren_depth == 0:
+                break
+            brace_depth = max(0, brace_depth - 1)
+        elif bracket_depth == 0 and paren_depth == 0 and brace_depth == 0:
+            if char in ";,\n\r":
+                break
+            if char.isspace():
+                break
+
+        idx += 1
+
+    return idx
+
+
+def normalize_luau_syntax(content):
+    replacements = []
+    idx = 0
+
+    while idx < len(content):
+        matched_operator = None
+        for operator in COMPOUND_ASSIGNMENT_OPERATORS:
+            if content.startswith(operator, idx):
+                matched_operator = operator
+                break
+
+        if not matched_operator:
+            idx += 1
+            continue
+
+        lhs_start = _find_compound_lhs_start(content, idx)
+        rhs_start = idx + len(matched_operator)
+        rhs_end = _find_compound_rhs_end(content, rhs_start)
+
+        lhs = content[lhs_start:idx].strip()
+        rhs = content[rhs_start:rhs_end].strip()
+        if lhs and rhs:
+            replacements.append(
+                (lhs_start, rhs_end, f"{lhs} = {lhs} {matched_operator[:-1]} {rhs}")
+            )
+        idx = rhs_end
+
+    if not replacements:
+        return content
+
+    rewritten = content
+    for start, end, replacement in reversed(replacements):
+        rewritten = rewritten[:start] + replacement + rewritten[end:]
+
+    return rewritten
+
+
+_configure_text_streams()
 
 def deobfuscate_file(filepath):
     print(f"Processing {filepath}...")
@@ -18,6 +163,8 @@ def deobfuscate_file(filepath):
     except Exception as e:
         print(f"Error reading {filepath}: {e}")
         return
+
+    content = normalize_luau_syntax(content)
 
     match = re.search(r'local ([a-zA-Z0-9_]+)=\{"', content)
     if not match:
@@ -98,12 +245,36 @@ local function table_concat(t, sep, i, j)
     return res
 end
 
+local function escape_lua_string(s)
+    local parts = {'"'}
+    for i = 1, #s do
+        local byte = string.byte(s, i)
+        if byte == 92 then
+            table.insert(parts, "\\\\")
+        elseif byte == 34 then
+            table.insert(parts, "\\\"")
+        elseif byte == 10 then
+            table.insert(parts, "\\n")
+        elseif byte == 13 then
+            table.insert(parts, "\\r")
+        elseif byte == 9 then
+            table.insert(parts, "\\t")
+        elseif byte >= 32 and byte <= 126 then
+            table.insert(parts, string.char(byte))
+        else
+            table.insert(parts, string.format("\\%03d", byte))
+        end
+    end
+    table.insert(parts, '"')
+    return table.concat(parts)
+end
+
 local function recursive_tostring(v, depth)
     if depth == nil then depth = 0 end
     if depth > 2 then return tostring(v) end
     
     if real_type(v) == "string" then
-        return '"' .. v .. '"'
+        return escape_lua_string(v)
     elseif real_type(v) == "number" then
         if v == math.floor(v) and v >= -2147483648 and v <= 2147483647 then
             return tostring(math.floor(v))
@@ -371,8 +542,7 @@ safe_globals["shared"] = MockEnv
         local out = "local Constants = {{"
         for i, k in ipairs(sorted_keys) do
             local v = {var_name}[k]
-            local v_str = tostring(v)
-            v_str = string.format("%q", v)
+            local v_str = escape_lua_string(v)
             out = out .. " [" .. k .. "] = " .. v_str .. ","
         end
         out = out .. " }}"
@@ -388,9 +558,14 @@ safe_globals["shared"] = MockEnv
     else:
         new_content = re.sub(r'getfenv\s+and\s+getfenv\(\)or\s+_ENV', 'MockEnv', new_content)
 
-    temp_file = "temp_deob.lua"
-    with open(temp_file, 'w', encoding='utf-8') as f:
-        f.write(new_content)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        suffix=".lua",
+        delete=False,
+    ) as temp_handle:
+        temp_file = temp_handle.name
+        temp_handle.write(new_content)
 
     print(f"Executing deobfuscation for {filepath}...")
 
@@ -479,27 +654,6 @@ safe_globals["shared"] = MockEnv
         os.remove(temp_file)
     #if os.path.exists(report_file):
     #    os.remove(report_file)
-
-def main():
-    target = "obfuscated_scripts"
-    if len(sys.argv) > 1:
-        target = sys.argv[1]
-
-    if os.path.isfile(target):
-        deobfuscate_file(target)
-    elif os.path.isdir(target):
-        files = glob.glob(os.path.join(target, "*.lua"))
-        for file in sorted(files):
-            if "temp_deob" in file or ".report.txt" in file or ".deobf." in file:
-                continue
-            deobfuscate_file(file)
-            print("-" * 40)
-    else:
-        print("Invalid path")
-
-if __name__ == "__main__":
-    main()
-
 
 def main():
     target = "obfuscated_scripts"
