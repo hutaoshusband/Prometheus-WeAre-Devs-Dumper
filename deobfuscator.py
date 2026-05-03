@@ -9,6 +9,107 @@ import tempfile
 
 
 COMPOUND_ASSIGNMENT_OPERATORS = ("+=", "-=", "*=", "/=", "%=", "..=")
+LUA_CONTROL_STRUCTURE_TOO_LONG = "control structure too long"
+
+
+def _find_table_literal_end(content, open_brace_index):
+    depth = 0
+    quote = None
+    idx = open_brace_index
+
+    while idx < len(content):
+        char = content[idx]
+
+        if quote:
+            if char == "\\":
+                idx += 2
+                continue
+            if char == quote:
+                quote = None
+            idx += 1
+            continue
+
+        if char in ("'", '"'):
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return idx + 1
+
+        idx += 1
+
+    return -1
+
+
+def extract_static_constants(content, var_name):
+    table_match = re.search(rf'\blocal\s+{re.escape(var_name)}\s*=\s*\{{', content)
+    if not table_match:
+        return ""
+
+    open_brace_index = content.find("{", table_match.start())
+    table_end = _find_table_literal_end(content, open_brace_index)
+    if table_end == -1:
+        return ""
+
+    lua_code = r'''
+local function escape_lua_string(s)
+    local parts = {'"'}
+    for i = 1, #s do
+        local byte = string.byte(s, i)
+        if byte == 92 then
+            table.insert(parts, "\\\\")
+        elseif byte == 34 then
+            table.insert(parts, "\\\"")
+        elseif byte == 10 then
+            table.insert(parts, "\\n")
+        elseif byte == 13 then
+            table.insert(parts, "\\r")
+        elseif byte == 9 then
+            table.insert(parts, "\\t")
+        elseif byte >= 32 and byte <= 126 then
+            table.insert(parts, string.char(byte))
+        else
+            table.insert(parts, string.format("\\%03d", byte))
+        end
+    end
+    table.insert(parts, '"')
+    return table.concat(parts)
+end
+
+local constants = __STATIC_TABLE__
+local out = "local Constants = {"
+for i, v in ipairs(constants) do
+    out = out .. " [" .. i .. "] = " .. escape_lua_string(v) .. ","
+end
+out = out .. " }"
+print(out)
+'''.replace("__STATIC_TABLE__", content[open_brace_index:table_end])
+
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        suffix=".lua",
+        delete=False,
+    ) as temp_handle:
+        temp_path = temp_handle.name
+        temp_handle.write(lua_code)
+
+    try:
+        process = subprocess.run(
+            ["lua_bin/lua5.1.exe", temp_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+        )
+        if process.returncode == 0:
+            return process.stdout.decode("utf-8", errors="replace").strip()
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+    return ""
 
 
 def _configure_text_streams():
@@ -171,6 +272,7 @@ def deobfuscate_file(filepath):
         print(f"Could not identify string table variable in {filepath}.")
         return
     var_name = match.group(1)
+    static_constants = extract_static_constants(content, var_name)
 
     mock_env_code = r"""
 local real_type = type
@@ -606,9 +708,12 @@ safe_globals["shared"] = MockEnv
             stdout_lines.append(line.strip())
             if any(prefix in line for prefix in RELEVANT_PREFIXES):
                 print(line.strip())
+    stderr_text = ""
     if err:
         stderr_text = err.decode('utf-8', errors='replace')
-        if stderr_text.strip():
+        if LUA_CONTROL_STRUCTURE_TOO_LONG in stderr_text and static_constants:
+            print("Lua 5.1 could not compile the full script; using static string-table fallback.")
+        elif stderr_text.strip():
             print("STDERR:", stderr_text)
 
     constants_str = ""
@@ -627,6 +732,9 @@ safe_globals["shared"] = MockEnv
             constants_str += line + "\n"
         elif any(prefix in line for prefix in RELEVANT_PREFIXES):
             trace_lines.append(line)
+
+    if not constants_str and LUA_CONTROL_STRUCTURE_TOO_LONG in stderr_text and static_constants:
+        constants_str = static_constants + "\n"
 
     report_file = filepath + ".report.txt"
     with open(report_file, 'w', encoding='utf-8') as f:
