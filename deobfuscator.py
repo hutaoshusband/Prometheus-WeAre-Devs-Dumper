@@ -330,8 +330,9 @@ local function unpack(t, i, j)
             local success, res = pcall(real_concat, t, ",")
             if success then
                 print("CAPTURED CHUNK STRING: " .. res)
-                if res:match("http") or res:match("www") then
-                    print("URL DETECTED IN UNPACK --> " .. res:match("https?://[%w%.%-%/]+"))
+                local url = res:match("https?://[%w%.%-%/%?%_%=%&%:]+") or res:match("www%.[%w%.%-%/%?%_%=%&%:]+")
+                if url then
+                    print("URL DETECTED IN UNPACK --> " .. url)
                 end
             end
         end
@@ -341,8 +342,11 @@ end
 
 local function table_concat(t, sep, i, j)
     local res = real_concat(t, sep, i, j)
-    if real_type(res) == "string" and (res:match("http") or res:match("www")) then
-         print("URL DETECTED IN CONCAT --> " .. res:match("https?://[%w%.%-%/]+"))
+    if real_type(res) == "string" then
+        local url = res:match("https?://[%w%.%-%/%?%_%=%&%:]+") or res:match("www%.[%w%.%-%/%?%_%=%&%:]+")
+        if url then
+            print("URL DETECTED IN CONCAT --> " .. url)
+        end
     end
     return res
 end

@@ -126,6 +126,29 @@ class DeobfuscatorRegressionTests(unittest.TestCase):
             self.assertIn('[1] = "A"', report.read_text(encoding="utf-8"))
             self.assertIn('[2] = "B"', deobfuscated.read_text(encoding="utf-8"))
 
+    def test_deobfuscator_safely_handles_http_substring_without_crashing(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sample = Path(tmp_dir) / "http_substring.luau"
+            sample.write_text(
+                '--[[ v1.0.0 https://wearedevs.net/obfuscator ]] '
+                'return(function(...)local env = ...; local z={"http", "www", "https://google.com/search?q=test"} '
+                'for _, url in ipairs(z) do env.table.concat({url}, "") end end)'
+                "(getfenv and getfenv()or _ENV)",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [sys.executable, "deobfuscator.py", str(sample)],
+                cwd=ROOT,
+                capture_output=True,
+            )
+            stdout = result.stdout.decode("utf-8", errors="replace")
+            stderr = result.stderr.decode("utf-8", errors="replace")
+
+            self.assertEqual(result.returncode, 0, msg=f"{stdout}\n{stderr}")
+            self.assertNotIn("STDERR:", stdout)
+            self.assertIn("URL DETECTED IN CONCAT --> https://google.com/search?q=test", stdout)
+
     def test_known_wearedevs_sample_keeps_decoded_constants_and_code(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             sample = Path(tmp_dir) / "known_decoded.lua"
