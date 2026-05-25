@@ -6,10 +6,27 @@ import os
 import glob
 import math
 import tempfile
+import shutil
 
 
 COMPOUND_ASSIGNMENT_OPERATORS = ("+=", "-=", "*=", "/=", "%=", "..=")
 LUA_CONTROL_STRUCTURE_TOO_LONG = "control structure too long"
+
+
+def get_lua_executable():
+    if os.name == "nt":
+        return os.path.join("lua_bin", "lua5.1.exe")
+
+    env_path = os.environ.get("LUA51_EXECUTABLE")
+    if env_path:
+        return env_path
+
+    for candidate in ("lua5.1", "lua51", "lua"):
+        path = shutil.which(candidate)
+        if path:
+            return path
+
+    return "lua5.1"
 
 
 def _find_table_literal_end(content, open_brace_index):
@@ -98,7 +115,7 @@ print(out)
 
     try:
         process = subprocess.run(
-            ["lua_bin/lua5.1.exe", temp_path],
+            [get_lua_executable(), temp_path],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=20,
@@ -461,6 +478,19 @@ local function create_dummy(name)
                     print("--- EXITING CLOSURE FOR " .. name .. " ---")
                 end
             end
+
+            if name == "readfile" or name == "loadfile" or name == "dofile" then
+                return ""
+            end
+            if name == "isfile" or name == "isfolder" then
+                return false
+            end
+            if name == "listfiles" then
+                return {}
+            end
+            if name == "writefile" or name == "appendfile" or name == "makefolder" or name == "delfile" or name == "delfolder" then
+                return nil
+            end
             
             return create_dummy(var_name)
         end,
@@ -512,9 +542,22 @@ local function mock_ipairs(t)
     return ipairs(t)
 end
 
+local safe_string = {}
+for k, v in pairs(string) do
+    safe_string[k] = v
+end
+safe_string.char = function(...)
+    local args = {...}
+    for i = 1, #args do
+        local value = tonumber(args[i]) or 0
+        args[i] = math.floor(value) % 256
+    end
+    return string.char(unpack(args))
+end
+
 local MockEnv = {}
 local safe_globals = {
-    ["string"] = string,
+    ["string"] = safe_string,
     ["table"] = {
         ["insert"] = table.insert,
         ["remove"] = table.remove,
@@ -592,7 +635,7 @@ setmetatable(MockEnv, {
             "hookmetamethod", "getcallingscript", "makefolder", "writefile", "readfile",
             "appendfile", "loadfile", "listfiles", "isfile", "isfolder", "delfile",
             "delfolder", "dofile", "bit", "bit32", 
-            "Vector2", "Vector3", "CFrame", "UDim2", "Color3", "Instance", "Ray",
+            "Vector2", "Vector3", "CFrame", "UDim", "UDim2", "Color3", "Instance", "Ray",
             "Enum", "BrickColor", "NumberRange", "NumberSequence", "ColorSequence",
             "task", "coroutine", "Delay", "delay", "Spawn", "spawn", "Wait", "wait", 
             "workspace", "Workspace", "tick", "time", "elapsedTime", "utf8"
@@ -675,7 +718,7 @@ safe_globals["shared"] = MockEnv
 
     print(f"Executing deobfuscation for {filepath}...")
 
-    process = subprocess.Popen(["lua_bin/lua5.1.exe", temp_file, "1"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process = subprocess.Popen([get_lua_executable(), temp_file, "1"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     stdout_lines = []
     
@@ -686,29 +729,24 @@ safe_globals["shared"] = MockEnv
         "PROP_SET", "LOADSTRING"
     )
     
-    start_time = time.time()
+    stdout_data = b""
+    err = b""
     try:
-        while True:
-            if process.poll() is not None:
-                break
-            line = process.stdout.readline()
-            if line:
-                decoded_line = line.decode('utf-8', errors='replace').strip()
-                stdout_lines.append(decoded_line)
-                if any(prefix in decoded_line for prefix in RELEVANT_PREFIXES):
-                    print(decoded_line)
-
-            if time.time() - start_time > 20:
-                print("Timeout reached.")
-                process.terminate()
-                break
+        stdout_data, err = process.communicate(timeout=20)
+    except subprocess.TimeoutExpired as exc:
+        print("Timeout reached.")
+        process.kill()
+        stdout_data, err = process.communicate()
+        if exc.output:
+            stdout_data = exc.output + stdout_data
+        if exc.stderr:
+            err = exc.stderr + err
     except Exception as e:
         print(f"Error: {e}")
         process.kill()
 
-    out, err = process.communicate()
-    if out:
-        for line in out.decode('utf-8', errors='replace').splitlines():
+    if stdout_data:
+        for line in stdout_data.decode('utf-8', errors='replace').splitlines():
             stdout_lines.append(line.strip())
             if any(prefix in line for prefix in RELEVANT_PREFIXES):
                 print(line.strip())

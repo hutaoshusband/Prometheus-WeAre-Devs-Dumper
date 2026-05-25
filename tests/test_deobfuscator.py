@@ -149,6 +149,29 @@ class DeobfuscatorRegressionTests(unittest.TestCase):
             self.assertNotIn("STDERR:", stdout)
             self.assertIn("URL DETECTED IN CONCAT --> https://google.com/search?q=test", stdout)
 
+    def test_mocked_string_char_tolerates_dummy_values(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sample = Path(tmp_dir) / "dummy_string_char.luau"
+            sample.write_text(
+                '--[[ v1.0.0 https://wearedevs.net/obfuscator ]] '
+                'return(function(...)local env = ...; local z={"A"} '
+                'local B = env.string.char; B(env.game) end)'
+                "(getfenv and getfenv()or _ENV)",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [sys.executable, "deobfuscator.py", str(sample)],
+                cwd=ROOT,
+                capture_output=True,
+            )
+            stdout = result.stdout.decode("utf-8", errors="replace")
+            stderr = result.stderr.decode("utf-8", errors="replace")
+
+            self.assertEqual(result.returncode, 0, msg=f"{stdout}\n{stderr}")
+            self.assertNotIn("STDERR:", stdout)
+            self.assertTrue(sample.with_name(sample.name + ".deobf.lua").exists())
+
     def test_known_wearedevs_sample_keeps_decoded_constants_and_code(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             sample = Path(tmp_dir) / "known_decoded.lua"
