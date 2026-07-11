@@ -24,6 +24,7 @@ class DeobfuscatorRegressionTests(unittest.TestCase):
         self.assertIn("bar.baz = bar.baz - delta", rewritten)
         self.assertIn("tbl[idx] = tbl[idx] * scale", rewritten)
 
+    @unittest.skipUnless(COMPLEX_FIXTURES.is_dir(), "local complex fixtures are not checked in")
     def test_complex_fixtures_emit_traceful_code(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             working_copy = Path(tmp_dir) / "complex"
@@ -76,6 +77,7 @@ class DeobfuscatorRegressionTests(unittest.TestCase):
                     msg=f"{output_file.name} did not recover meaningful Lua code:\n{text[:1000]}",
                 )
 
+    @unittest.skipUnless(COMPLEX_FIXTURES.is_dir(), "local complex fixtures are not checked in")
     def test_complex_fixture_constants_are_ascii_safe(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             working_copy = Path(tmp_dir) / "complex"
@@ -172,6 +174,7 @@ class DeobfuscatorRegressionTests(unittest.TestCase):
             self.assertNotIn("STDERR:", stdout)
             self.assertTrue(sample.with_name(sample.name + ".deobf.lua").exists())
 
+    @unittest.skipUnless(OBFUSCATED_FIXTURES.is_dir(), "local obfuscated fixtures are not checked in")
     def test_known_wearedevs_sample_keeps_decoded_constants_and_code(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             sample = Path(tmp_dir) / "known_decoded.lua"
@@ -201,6 +204,7 @@ class DeobfuscatorRegressionTests(unittest.TestCase):
             ):
                 self.assertIn(token, text)
 
+    @unittest.skipUnless(OBFUSCATED_FIXTURES.is_dir(), "local obfuscated fixtures are not checked in")
     def test_local_obfuscated_fixture_batch_still_produces_outputs(self):
         source_files = [
             path
