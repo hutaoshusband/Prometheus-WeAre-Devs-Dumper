@@ -3,3 +3,5 @@ obfuscated_scripts/
 deobfuscated_scripts_complex/
 unobfuscated_scripts/
 unobfuscated_scripts_complex/
+*.deobf.lua
+*.report.txt

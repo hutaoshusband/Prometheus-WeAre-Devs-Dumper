@@ -1,0 +1,10 @@
+{
+  "provider": "wearedevs",
+  "url": "https://wearedevs.net/obfuscator",
+  "generated": "2026-11-12",
+  "method": "manual browser submission by user",
+  "banner": "--[[ v1.0.0 https://wearedevs.net/obfuscator ]]",
+  "original_output_sha256": "245176973aab1adf3c8f8d9eadd8dc03e337585e2eccf3a514df9fb50cedee0b",
+  "source_sha256": "a74873536a210cb36a052a0017eb0911472e530bafe69845b5d3e4cb3c01029d",
+  "output_sha256": "e65b398305666ef489c4ca2655098c42f43b422bd5e45683e4e0819eac3bb69f"
+}

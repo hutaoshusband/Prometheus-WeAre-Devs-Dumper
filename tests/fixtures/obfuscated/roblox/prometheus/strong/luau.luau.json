@@ -1,0 +1,11 @@
+{
+  "provider": "prometheus",
+  "repository": "https://github.com/prometheus-lua/Prometheus",
+  "commit": "a98c50165f2a53f6d765a82eee60dfea53803445",
+  "preset": "Strong",
+  "seed": 20261112,
+  "generator_runtime": "LuaJIT 2.1.1774896198",
+  "lua_version": "LuaU",
+  "source_sha256": "7fdb43d19203433210516ea84b71f9f9cdbd687017e3f3adf92dba2eddedfa4b",
+  "output_sha256": "68096773a734f6c081d6efc31a4385e429b21305fecf89fb2524edf3c16899f2"
+}

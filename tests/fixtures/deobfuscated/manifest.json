@@ -1,0 +1,103 @@
+{
+  "scope": "Executed fixture behavior, exact expected strings and typed constants",
+  "roblox_environment": "Mocked services and one callback invocation with four mock arguments",
+  "universal_deobfuscation": false,
+  "samples": [
+    {
+      "input": "tests/fixtures/obfuscated/non_roblox/prometheus/medium/lua.lua",
+      "output": "tests/fixtures/deobfuscated/non_roblox/prometheus/medium/lua.lua",
+      "sha256": "de621ea4c0ee09e20f349353a2d46ee726782db7639eeebccfefc1933d0e3de5",
+      "strings_and_constants_verified": true,
+      "runtime_operations_match_source": true,
+      "standalone_stdout_and_returns_match": true
+    },
+    {
+      "input": "tests/fixtures/obfuscated/non_roblox/prometheus/medium/luau.luau",
+      "output": "tests/fixtures/deobfuscated/non_roblox/prometheus/medium/luau.luau",
+      "sha256": "00fcf7a903358ab7f00224c006b9225a47ec96ca76481a39781f5bd65a1d6371",
+      "strings_and_constants_verified": true,
+      "runtime_operations_match_source": true,
+      "standalone_stdout_and_returns_match": true
+    },
+    {
+      "input": "tests/fixtures/obfuscated/non_roblox/prometheus/strong/lua.lua",
+      "output": "tests/fixtures/deobfuscated/non_roblox/prometheus/strong/lua.lua",
+      "sha256": "c8c34daeb91f3488c2ba704e16010455efa14091cc55c545a6dab0c95b57ddcd",
+      "strings_and_constants_verified": true,
+      "runtime_operations_match_source": true,
+      "standalone_stdout_and_returns_match": true
+    },
+    {
+      "input": "tests/fixtures/obfuscated/non_roblox/prometheus/strong/luau.luau",
+      "output": "tests/fixtures/deobfuscated/non_roblox/prometheus/strong/luau.luau",
+      "sha256": "85fb286f049bc9efa205f2864b0c726b753c37532d61e0ab33d4df8be79f4c0c",
+      "strings_and_constants_verified": true,
+      "runtime_operations_match_source": true,
+      "standalone_stdout_and_returns_match": true
+    },
+    {
+      "input": "tests/fixtures/obfuscated/non_roblox/wearedevs/lua.lua",
+      "output": "tests/fixtures/deobfuscated/non_roblox/wearedevs/lua.lua",
+      "sha256": "d86f1a3abe8a6b1a60df94cbd810c40ffce26476974e1e16e7d835355d4ca39e",
+      "strings_and_constants_verified": true,
+      "runtime_operations_match_source": true,
+      "standalone_stdout_and_returns_match": true
+    },
+    {
+      "input": "tests/fixtures/obfuscated/non_roblox/wearedevs/luau.luau",
+      "output": "tests/fixtures/deobfuscated/non_roblox/wearedevs/luau.luau",
+      "sha256": "89a0d719b3e27702489f2e022e060906742755050f64aaea9f2dc59f6b77b69d",
+      "strings_and_constants_verified": true,
+      "runtime_operations_match_source": true,
+      "standalone_stdout_and_returns_match": true
+    },
+    {
+      "input": "tests/fixtures/obfuscated/roblox/prometheus/medium/lua.lua",
+      "output": "tests/fixtures/deobfuscated/roblox/prometheus/medium/lua.lua",
+      "sha256": "1f44e234cc3246ab6faed3a75180bd955c6777828c5b1613e69b2ca3b7bd652d",
+      "strings_and_constants_verified": true,
+      "runtime_operations_match_source": true,
+      "standalone_stdout_and_returns_match": null
+    },
+    {
+      "input": "tests/fixtures/obfuscated/roblox/prometheus/medium/luau.luau",
+      "output": "tests/fixtures/deobfuscated/roblox/prometheus/medium/luau.luau",
+      "sha256": "111eff2cf6df3850d6834727bf8febe5dbd0402568c92ca3bbf9adaf05ed24db",
+      "strings_and_constants_verified": true,
+      "runtime_operations_match_source": true,
+      "standalone_stdout_and_returns_match": null
+    },
+    {
+      "input": "tests/fixtures/obfuscated/roblox/prometheus/strong/lua.lua",
+      "output": "tests/fixtures/deobfuscated/roblox/prometheus/strong/lua.lua",
+      "sha256": "958cf08d4df1ee048d007473bb3617f0f506ba68a77c29fd633b1c58dfe30e7e",
+      "strings_and_constants_verified": true,
+      "runtime_operations_match_source": true,
+      "standalone_stdout_and_returns_match": null
+    },
+    {
+      "input": "tests/fixtures/obfuscated/roblox/prometheus/strong/luau.luau",
+      "output": "tests/fixtures/deobfuscated/roblox/prometheus/strong/luau.luau",
+      "sha256": "ff2f9427e5d11f34c95bdd08d86bad360ca4b6524989e785a59edaafc3e32e8d",
+      "strings_and_constants_verified": true,
+      "runtime_operations_match_source": true,
+      "standalone_stdout_and_returns_match": null
+    },
+    {
+      "input": "tests/fixtures/obfuscated/roblox/wearedevs/lua.lua",
+      "output": "tests/fixtures/deobfuscated/roblox/wearedevs/lua.lua",
+      "sha256": "1423dfaaceaa3ad23f873f834a5491fcc13fc9a8a3dcdc345973b97d35853a59",
+      "strings_and_constants_verified": true,
+      "runtime_operations_match_source": true,
+      "standalone_stdout_and_returns_match": null
+    },
+    {
+      "input": "tests/fixtures/obfuscated/roblox/wearedevs/luau.luau",
+      "output": "tests/fixtures/deobfuscated/roblox/wearedevs/luau.luau",
+      "sha256": "8f1a38c62f910c2f6fd061268898228b4feb5bab7d1f4831b95e835d7f2f43fb",
+      "strings_and_constants_verified": true,
+      "runtime_operations_match_source": true,
+      "standalone_stdout_and_returns_match": null
+    }
+  ]
+}

@@ -1,826 +1,490 @@
-import re
-import sys
-import subprocess
-import time
+import argparse
 import os
-import glob
-import math
-import tempfile
+import re
 import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import NamedTuple
 
 
-COMPOUND_ASSIGNMENT_OPERATORS = ("+=", "-=", "*=", "/=", "%=", "..=")
+ROOT = Path(__file__).resolve().parent
 LUA_CONTROL_STRUCTURE_TOO_LONG = "control structure too long"
+COMPOUND_ASSIGNMENT_OPERATORS = ("+=", "-=", "*=", "/=", "%=", "..=", "^=")
+LUA_KEYWORDS = frozenset(
+    (
+        "and", "break", "do", "else", "elseif", "end", "false", "for", "function",
+        "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true",
+        "until", "while",
+    )
+)
+TOKEN_PATTERN = re.compile(
+    r"(?P<longcomment>--\[(?P<ceq>=*)\[.*?\](?P=ceq)\])"
+    r"|(?P<comment>--[^\n]*)"
+    r"|(?P<longstring>\[(?P<seq>=*)\[.*?\](?P=seq)\])"
+    r"|(?P<string>\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*')"
+    r"|(?P<name>[a-zA-Z_][a-zA-Z_0-9]*)"
+    r"|(?P<number>0[xX][0-9a-fA-F]+(?:\.[0-9a-fA-F]+)?(?:[pP][+-]?\d+)?"
+    r"|(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?)"
+    r"|(?P<operator>\.\.=|\.\.\.|[+*/%^=-]=|~=|<=|>=|\.\.|\S)",
+    re.DOTALL,
+)
+
+
+class Token(NamedTuple):
+    kind: str
+    text: str
+    start: int
+    end: int
+
+
+def lua_tokens(source):
+    tokens = []
+
+    for match in TOKEN_PATTERN.finditer(source):
+        if match.lastgroup in ("comment", "longcomment"):
+            continue
+
+        tokens.append(
+            Token(match.lastgroup, match.group(), match.start(), match.end())
+        )
+
+    return tokens
+
+
+def lua_string(value):
+    parts = []
+
+    for byte in value.encode("utf-8"):
+        if byte in (34, 92):
+            parts.append("\\" + chr(byte))
+        elif 32 <= byte <= 126:
+            parts.append(chr(byte))
+        else:
+            parts.append(f"\\{byte:03d}")
+
+    return '"' + "".join(parts) + '"'
 
 
 def get_lua_executable():
-    if os.name == "nt":
-        return os.path.join("lua_bin", "lua5.1.exe")
+    configured = os.environ.get("LUA51_EXECUTABLE")
 
-    env_path = os.environ.get("LUA51_EXECUTABLE")
-    if env_path:
-        return env_path
+    if configured:
+        candidates = [configured]
+    else:
+        candidates = []
 
-    for candidate in ("lua5.1", "lua51", "lua"):
-        path = shutil.which(candidate)
-        if path:
-            return path
+        if os.name == "nt":
+            candidates.append(str(ROOT / "lua_bin/lua5.1.exe"))
 
-    return "lua5.1"
+        for name in ("lua5.1", "lua51", "luajit", "lua"):
+            executable = shutil.which(name)
+            if executable:
+                candidates.append(executable)
 
-
-def _find_table_literal_end(content, open_brace_index):
-    depth = 0
-    quote = None
-    idx = open_brace_index
-
-    while idx < len(content):
-        char = content[idx]
-
-        if quote:
-            if char == "\\":
-                idx += 2
-                continue
-            if char == quote:
-                quote = None
-            idx += 1
+    for executable in candidates:
+        try:
+            result = subprocess.run(
+                [executable, "-e", 'io.write(_VERSION)'],
+                capture_output=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
             continue
 
-        if char in ("'", '"'):
-            quote = char
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return idx + 1
+        if result.returncode == 0 and result.stdout == b"Lua 5.1":
+            return executable
 
-        idx += 1
-
-    return -1
+    raise RuntimeError(
+        "Lua 5.1 or LuaJIT is required; set LUA51_EXECUTABLE to its path"
+    )
 
 
-def extract_static_constants(content, var_name):
-    table_match = re.search(rf'\blocal\s+{re.escape(var_name)}\s*=\s*\{{', content)
-    if not table_match:
-        return ""
+def _matching_bracket(tokens, start):
+    closing_brackets = {"(": ")", "[": "]", "{": "}"}
+    expected = []
 
-    open_brace_index = content.find("{", table_match.start())
-    table_end = _find_table_literal_end(content, open_brace_index)
-    if table_end == -1:
-        return ""
+    for index in range(start, len(tokens)):
+        token = tokens[index]
 
-    lua_code = r'''
-local function escape_lua_string(s)
-    local parts = {'"'}
-    for i = 1, #s do
-        local byte = string.byte(s, i)
-        if byte == 92 then
-            table.insert(parts, "\\\\")
-        elseif byte == 34 then
-            table.insert(parts, "\\\"")
-        elseif byte == 10 then
-            table.insert(parts, "\\n")
-        elseif byte == 13 then
-            table.insert(parts, "\\r")
-        elseif byte == 9 then
-            table.insert(parts, "\\t")
-        elseif byte >= 32 and byte <= 126 then
-            table.insert(parts, string.char(byte))
-        else
-            table.insert(parts, string.format("\\%03d", byte))
-        end
-    end
-    table.insert(parts, '"')
-    return table.concat(parts)
-end
+        if token.kind in ("string", "longstring"):
+            continue
 
-local constants = __STATIC_TABLE__
-local out = "local Constants = {"
-for i, v in ipairs(constants) do
-    out = out .. " [" .. i .. "] = " .. escape_lua_string(v) .. ","
-end
-out = out .. " }"
-print(out)
-'''.replace("__STATIC_TABLE__", content[open_brace_index:table_end])
+        if token.text in closing_brackets:
+            expected.append(closing_brackets[token.text])
+        elif token.text in closing_brackets.values():
+            if not expected or token.text != expected.pop():
+                return None
+            if not expected:
+                return index
 
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        suffix=".lua",
-        delete=False,
-    ) as temp_handle:
-        temp_path = temp_handle.name
-        temp_handle.write(lua_code)
+    return None
 
-    try:
-        process = subprocess.run(
-            [get_lua_executable(), temp_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=20,
+
+def _find_table_literal_end(source, open_brace_index):
+    tokens = lua_tokens(source[open_brace_index:])
+    closing_index = _matching_bracket(tokens, 0)
+
+    if closing_index is None:
+        return -1
+
+    return open_brace_index + tokens[closing_index].end
+
+
+def constant_tables(source):
+    tokens = lua_tokens(source)
+    literal_tokens = {"true", "false", "nil", ",", ";", "-", "+"}
+
+    for index in range(len(tokens) - 3):
+        declaration, variable, assignment, opening = tokens[index:index + 4]
+
+        if declaration.text != "local" or variable.kind != "name":
+            continue
+        if assignment.text != "=" or opening.text != "{":
+            continue
+
+        closing_index = _matching_bracket(tokens, index + 3)
+        if closing_index is None:
+            continue
+
+        values = tokens[index + 4:closing_index]
+        contains_only_literals = all(
+            token.kind in ("number", "string", "longstring")
+            or token.text in literal_tokens
+            for token in values
         )
-        if process.returncode == 0:
-            return process.stdout.decode("utf-8", errors="replace").strip()
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+
+        if values and contains_only_literals:
+            yield variable.text, opening.start, tokens[closing_index].end
+
+
+def instrument_constants(source):
+    tables = list(constant_tables(source))
+
+    for _, start, end in reversed(tables):
+        literal = source[start:end]
+        source = source[:start] + f"__capture_table({literal})" + source[end:]
+
+    return source
+
+
+def extract_static_constants(source, variable_name):
+    for name, start, end in constant_tables(source):
+        if name != variable_name:
+            continue
+
+        literal = source[start:end]
+        capture = f"local values = __capture_table({literal}); return nil"
+        stdout, _, _ = run_chunk(capture)
+        constants, _ = read_sections(stdout)
+        return constants.strip()
 
     return ""
 
 
-def _configure_text_streams():
-    for stream_name in ("stdout", "stderr"):
-        stream = getattr(sys, stream_name, None)
-        if stream is None or not hasattr(stream, "reconfigure"):
-            continue
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
-
-
-def _find_compound_lhs_start(content, operator_index):
-    idx = operator_index - 1
-    while idx >= 0 and content[idx].isspace():
-        idx -= 1
-
-    while idx >= 0 and content[idx] == "]":
-        bracket_depth = 1
-        idx -= 1
-        while idx >= 0 and bracket_depth > 0:
-            if content[idx] == "]":
-                bracket_depth += 1
-            elif content[idx] == "[":
-                bracket_depth -= 1
-            idx -= 1
-
-    while idx >= 0 and (content[idx].isalnum() or content[idx] == "_"):
-        idx -= 1
-
-    while idx >= 0 and content[idx] == ".":
-        idx -= 1
-        while idx >= 0 and content[idx] == "]":
-            bracket_depth = 1
-            idx -= 1
-            while idx >= 0 and bracket_depth > 0:
-                if content[idx] == "]":
-                    bracket_depth += 1
-                elif content[idx] == "[":
-                    bracket_depth -= 1
-                idx -= 1
-        while idx >= 0 and (content[idx].isalnum() or content[idx] == "_"):
-            idx -= 1
-
-    return idx + 1
-
-
-def _find_compound_rhs_end(content, rhs_start):
-    idx = rhs_start
-    length = len(content)
-    bracket_depth = 0
-    paren_depth = 0
-    brace_depth = 0
-    quote = None
-
-    while idx < length and content[idx].isspace():
-        idx += 1
-
-    while idx < length:
-        char = content[idx]
-
-        if quote:
-            if char == "\\":
-                idx += 2
-                continue
-            if char == quote:
-                quote = None
-            idx += 1
-            continue
-
-        if char in ("'", '"'):
-            quote = char
-            idx += 1
-            continue
-
-        if char == "[":
-            bracket_depth += 1
-        elif char == "]":
-            bracket_depth = max(0, bracket_depth - 1)
-        elif char == "(":
-            paren_depth += 1
-        elif char == ")":
-            if paren_depth == 0 and bracket_depth == 0 and brace_depth == 0:
-                break
-            paren_depth = max(0, paren_depth - 1)
-        elif char == "{":
-            brace_depth += 1
-        elif char == "}":
-            if brace_depth == 0 and bracket_depth == 0 and paren_depth == 0:
-                break
-            brace_depth = max(0, brace_depth - 1)
-        elif bracket_depth == 0 and paren_depth == 0 and brace_depth == 0:
-            if char in ";,\n\r":
-                break
-            if char.isspace():
-                break
-
-        idx += 1
-
-    return idx
-
-
-def normalize_luau_syntax(content):
-    replacements = []
-    idx = 0
-
-    while idx < len(content):
-        matched_operator = None
-        for operator in COMPOUND_ASSIGNMENT_OPERATORS:
-            if content.startswith(operator, idx):
-                matched_operator = operator
-                break
-
-        if not matched_operator:
-            idx += 1
-            continue
-
-        lhs_start = _find_compound_lhs_start(content, idx)
-        rhs_start = idx + len(matched_operator)
-        rhs_end = _find_compound_rhs_end(content, rhs_start)
-
-        lhs = content[lhs_start:idx].strip()
-        rhs = content[rhs_start:rhs_end].strip()
-        if lhs and rhs:
-            replacements.append(
-                (lhs_start, rhs_end, f"{lhs} = {lhs} {matched_operator[:-1]} {rhs}")
-            )
-        idx = rhs_end
-
-    if not replacements:
-        return content
-
-    rewritten = content
-    for start, end, replacement in reversed(replacements):
-        rewritten = rewritten[:start] + replacement + rewritten[end:]
-
-    return rewritten
-
-
-_configure_text_streams()
-
-def deobfuscate_file(filepath):
-    print(f"Processing {filepath}...")
-    
-    if ".deobf." in filepath or ".report." in filepath:
-        return
-        
-    try:
-        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-            content = f.read()
-    except Exception as e:
-        print(f"Error reading {filepath}: {e}")
-        return
-
-    content = normalize_luau_syntax(content)
-
-    match = re.search(r'local ([a-zA-Z0-9_]+)=\{"', content)
-    if not match:
-        print(f"Could not identify string table variable in {filepath}.")
-        return
-    var_name = match.group(1)
-    static_constants = extract_static_constants(content, var_name)
-
-    mock_env_code = r"""
-local real_type = type
-local real_tonumber = tonumber
-local real_unpack = unpack
-local real_concat = table.concat
-local real_tostring = tostring
-local real_print = print
-
-local _WAIT_COUNT = 0
-local _LOOP_COUNTER = 0
-local _MAX_LOOPS = 150
-local _LOOP_BODIES = {}
-
-local function _check_loop()
-    _LOOP_COUNTER = _LOOP_COUNTER + 1
-    if _LOOP_COUNTER > _MAX_LOOPS then
-        return false
-    end
-    return true
-end
-
-local function type(v)
-    local mt = getmetatable(v)
-    if mt and mt.__is_mock_dummy then
-        return "userdata"
-    end
-    return real_type(v)
-end
-
-local function typeof(v)
-    local mt = getmetatable(v)
-    if mt and mt.__is_mock_dummy then
-        return "Instance"
-    end
-    return type(v)
-end
-
-local function tonumber(v, base)
-    if type(v) == "userdata" or (type(v) == "table" and getmetatable(v) and getmetatable(v).__is_mock_dummy) then
-        return 1
-    end
-    return real_tonumber(v, base)
-end
-
-local function unpack(t, i, j)
-    if real_type(t) == "table" then
-        local looks_like_chunk = true
-        for k, v in pairs(t) do
-            if real_type(k) ~= "number" then looks_like_chunk = false break end
-        end
-        
-        if looks_like_chunk and #t > 0 then
-            print("UNPACK CALLED WITH TABLE (Potential Chunk): size=" .. #t)
-            local success, res = pcall(real_concat, t, ",")
-            if success then
-                print("CAPTURED CHUNK STRING: " .. res)
-                local url = res:match("https?://[%w%.%-%/%?%_%=%&%:]+") or res:match("www%.[%w%.%-%/%?%_%=%&%:]+")
-                if url then
-                    print("URL DETECTED IN UNPACK --> " .. url)
-                end
-            end
-        end
-    end
-    return real_unpack(t, i, j)
-end
-
-local function table_concat(t, sep, i, j)
-    local res = real_concat(t, sep, i, j)
-    if real_type(res) == "string" then
-        local url = res:match("https?://[%w%.%-%/%?%_%=%&%:]+") or res:match("www%.[%w%.%-%/%?%_%=%&%:]+")
-        if url then
-            print("URL DETECTED IN CONCAT --> " .. url)
-        end
-    end
-    return res
-end
-
-local function escape_lua_string(s)
-    local parts = {'"'}
-    for i = 1, #s do
-        local byte = string.byte(s, i)
-        if byte == 92 then
-            table.insert(parts, "\\\\")
-        elseif byte == 34 then
-            table.insert(parts, "\\\"")
-        elseif byte == 10 then
-            table.insert(parts, "\\n")
-        elseif byte == 13 then
-            table.insert(parts, "\\r")
-        elseif byte == 9 then
-            table.insert(parts, "\\t")
-        elseif byte >= 32 and byte <= 126 then
-            table.insert(parts, string.char(byte))
-        else
-            table.insert(parts, string.format("\\%03d", byte))
-        end
-    end
-    table.insert(parts, '"')
-    return table.concat(parts)
-end
-
-local function recursive_tostring(v, depth)
-    if depth == nil then depth = 0 end
-    if depth > 2 then return tostring(v) end
-    
-    if real_type(v) == "string" then
-        return escape_lua_string(v)
-    elseif real_type(v) == "number" then
-        if v == math.floor(v) and v >= -2147483648 and v <= 2147483647 then
-            return tostring(math.floor(v))
-        end
-        return tostring(v)
-    elseif real_type(v) == "boolean" then
-        return tostring(v)
-    elseif v == nil then
-        return "nil"
-    elseif real_type(v) == "table" then
-        if getmetatable(v) and getmetatable(v).__is_mock_dummy then
-            return tostring(v)
-        end
-        local parts = {}
-        local keys = {}
-        for k in pairs(v) do table.insert(keys, k) end
-        table.sort(keys, function(a,b) return tostring(a) < tostring(b) end)
-
-        for _, k in ipairs(keys) do
-            local val = v[k]
-            local k_str = tostring(k)
-            if real_type(k) == "string" then k_str = '["' .. k .. '"]' end
-            table.insert(parts, k_str .. " = " .. recursive_tostring(val, depth + 1))
-        end
-        return "{" .. real_concat(parts, ", ") .. "}"
-    elseif real_type(v) == "function" then
-        return tostring(v)
-    else
-        return tostring(v)
-    end
-end
-
-local function create_dummy(name)
-    local d = {}
-    local mt = {
-        __is_mock_dummy = true,
-        __index = function(_, k)
-             print("ACCESSED --> " .. name .. "." .. k)
-             if k == "HttpGet" or k == "HttpGetAsync" then
-                 return function(_, url, ...)
-                     print("URL DETECTED --> " .. tostring(url))
-                     return create_dummy("HttpGetResult")
-                 end
-            end
-            return create_dummy(name .. "." .. k)
-        end,
-        __newindex = function(_, k, v)
-            local val_str = recursive_tostring(v, 0)
-            print("PROP_SET --> " .. name .. "." .. k .. " = " .. val_str)
-        end,
-        __call = function(_, ...)
-            local args = {...}
-            local arg_str = ""
-            for i, v in ipairs(args) do
-                if i > 1 then arg_str = arg_str .. ", " end
-                arg_str = arg_str .. recursive_tostring(v)
-            end
-
-            local var_name = name:gsub("%.", "_") .. "_" .. math.random(100, 999)
-            print("CALL_RESULT --> local " .. var_name .. " = " .. name .. "(" .. arg_str .. ")")
-            if name == "task.wait" or name == "wait" then
-                _WAIT_COUNT = _WAIT_COUNT + 1
-                if _WAIT_COUNT > 10 then
-                     error("Too many waits!")
-                end
-            end
-
-            
-            for i, v in ipairs(args) do
-                if real_type(v) == "function" then
-                    print("--- ENTERING CLOSURE FOR " .. name .. " ---")
-                    local success, err = pcall(v, 
-                        create_dummy("arg1"), create_dummy("arg2"), 
-                        create_dummy("arg3"), create_dummy("arg4"))
-                    if not success then 
-                        print("-- CLOSURE ERROR: " .. tostring(err)) 
-                    end
-                    print("--- EXITING CLOSURE FOR " .. name .. " ---")
-                end
-            end
-
-            if name == "readfile" or name == "loadfile" or name == "dofile" then
-                return ""
-            end
-            if name == "isfile" or name == "isfolder" then
-                return false
-            end
-            if name == "listfiles" then
-                return {}
-            end
-            if name == "writefile" or name == "appendfile" or name == "makefolder" or name == "delfile" or name == "delfolder" then
-                return nil
-            end
-            
-            return create_dummy(var_name)
-        end,
-        __tostring = function() return name end,
-        __concat = function(a, b) return tostring(a) .. tostring(b) end,
-        __add = function(a, b) return create_dummy("("..tostring(a).."+"..tostring(b)..")") end,
-        __sub = function(a, b) return create_dummy("("..tostring(a).."-"..tostring(b)..")") end,
-        __mul = function(a, b) return create_dummy("("..tostring(a).."*"..tostring(b)..")") end,
-        __div = function(a, b) return create_dummy("("..tostring(a).."/"..tostring(b)..")") end,
-        __mod = function(a, b) return create_dummy("("..tostring(a).."%"..tostring(b)..")") end,
-        __pow = function(a, b) return create_dummy("("..tostring(a).."^"..tostring(b)..")") end,
-        __unm = function(a) return create_dummy("-"..tostring(a)) end,
-        __lt = function(a, b) return false end,
-        __le = function(a, b) return false end,
-        __eq = function(a, b) return false end,
-        __len = function(a) return 2 end,
+def _rhs_end(tokens, start):
+    binary_operators = {
+        "+", "-", "*", "/", "%", "^", "..", "and", "or",
+        "==", "~=", "<", ">", "<=", ">=",
     }
-    setmetatable(d, mt)
-    return d
-end
+    unary_operators = {"-", "#", "not"}
+    index = start
+    needs_value = True
 
-local function mock_pairs(t)
-    local mt = getmetatable(t)
-    if mt and mt.__is_mock_dummy then
-        local i = 0
-        return function(...)
-            i = i + 1
-            if i <= 1 then
-                return i, create_dummy(tostring(t).."_v"..i)
-            end
-            return nil
-        end
-    end
-    return pairs(t)
-end
+    while index < len(tokens):
+        token = tokens[index]
 
-local function mock_ipairs(t)
-    local mt = getmetatable(t)
-    if mt and mt.__is_mock_dummy then
-        local i = 0
-        return function(...)
-            i = i + 1
-            if i <= 1 then
-                return i, create_dummy(tostring(t).."_v"..i)
-            end
-            return nil
-        end
-    end
-    return ipairs(t)
-end
+        if token.text in ("(", "{", "["):
+            closing_index = _matching_bracket(tokens, index)
+            if closing_index is None:
+                break
 
-local safe_string = {}
-for k, v in pairs(string) do
-    safe_string[k] = v
-end
-safe_string.char = function(...)
-    local args = {...}
-    for i = 1, #args do
-        local value = tonumber(args[i]) or 0
-        args[i] = math.floor(value) % 256
-    end
-    return string.char(unpack(args))
-end
+            index = closing_index + 1
+            needs_value = False
+        elif needs_value and (
+            token.text in unary_operators
+            or token.kind in ("name", "number", "string", "longstring")
+        ):
+            needs_value = token.text in unary_operators
+            index += 1
+        elif not needs_value and token.text in binary_operators:
+            needs_value = True
+            index += 1
+        elif not needs_value and token.text in (".", ":") and index + 1 < len(tokens):
+            index += 2
+        else:
+            break
 
-local MockEnv = {}
-local safe_globals = {
-    ["string"] = safe_string,
-    ["table"] = {
-        ["insert"] = table.insert,
-        ["remove"] = table.remove,
-        ["sort"] = table.sort,
-        ["concat"] = table_concat,
-        ["maxn"] = table.maxn
-    },
-    ["math"] = math,
-    ["pairs"] = mock_pairs,
-    ["ipairs"] = mock_ipairs,
-    ["select"] = select,
-    ["unpack"] = unpack,
-    ["tonumber"] = tonumber,
-    ["tostring"] = tostring,
-    ["type"] = type,
-    ["typeof"] = typeof,
-    ["pcall"] = pcall,
-    ["xpcall"] = xpcall,
-    ["getfenv"] = getfenv,
-    ["setmetatable"] = setmetatable,
-    ["getmetatable"] = getmetatable,
-    ["error"] = error,
-    ["assert"] = assert,
-    ["next"] = next,
-    ["print"] = function(...)
-        local args = {...}
-        local parts = {}
-        for i,v in ipairs(args) do table.insert(parts, tostring(v)) end
-        print("TRACE_PRINT --> " .. table.concat(parts, "\t"))
-    end,
-    ["_VERSION"] = _VERSION,
-    ["rawset"] = rawset,
-    ["rawget"] = rawget,
-    ["os"] = os,
-    ["io"] = io,
-    ["package"] = package,
-    ["debug"] = debug,
-    ["dofile"] = dofile,
-    ["loadfile"] = loadfile,
-    ["loadstring"] = function(s) 
-        print("LOADSTRING DETECTED: size=" .. tostring(#s)) 
-        print("LOADSTRING CONTENT START")
-        print(s)
-        print("LOADSTRING CONTENT END")
-        return function() print("DUMMY FUNC CALLED") end
-    end
-}
+    return index
 
-setmetatable(MockEnv, {
-    __index = function(t, k)
-        if safe_globals[k] then
-            return safe_globals[k]
-        end
 
-        if k == "game" then
-            print("ACCESSED --> game")
-            return create_dummy("game")
-        end
-        if k == "getgenv" or k == "getrenv" or k == "getreg" then
-            return function() return MockEnv end
-        end
+def _prefix_start(tokens, end):
+    token = tokens[end]
 
-        local exploit_funcs = {
-            "getgc", "getinstances", "getnilinstances",
-            "getloadedmodules", "getconnections", "firesignal", "fireclickdetector",
-            "firetouchinterest", "isnetworkowner", "gethiddenproperty", "sethiddenproperty",
-            "setsimulationradius", "rconsoleprint", "rconsolewarn", "rconsoleerr",
-            "rconsoleinfo", "rconsolename", "rconsoleclear", "consoleprint", "consolewarn",
-            "consoleerr", "consoleinfo", "consolename", "consoleclear", "warn", "print",
-            "error", "debug", "clonefunction", "hookfunction", "newcclosure", "replaceclosure",
-            "restoreclosure", "islclosure", "iscclosure", "checkcaller", "getnamecallmethod",
-            "setnamecallmethod", "getrawmetatable", "setrawmetatable", "setreadonly",
-            "isreadonly", "iswindowactive", "keypress", "keyrelease", "mouse1click",
-            "mouse1press", "mouse1release", "mousescroll", "mousemoverel", "mousemoveabs",
-            "hookmetamethod", "getcallingscript", "makefolder", "writefile", "readfile",
-            "appendfile", "loadfile", "listfiles", "isfile", "isfolder", "delfile",
-            "delfolder", "dofile", "bit", "bit32", 
-            "Vector2", "Vector3", "CFrame", "UDim", "UDim2", "Color3", "Instance", "Ray",
-            "Enum", "BrickColor", "NumberRange", "NumberSequence", "ColorSequence",
-            "task", "coroutine", "Delay", "delay", "Spawn", "spawn", "Wait", "wait", 
-            "workspace", "Workspace", "tick", "time", "elapsedTime", "utf8"
-        }
-        for _, name in ipairs(exploit_funcs) do
-            if k == name then
-                print("ACCESSED --> " .. k)
-                return create_dummy(k)
-            end
-        end
+    if token.kind == "name" and token.text not in LUA_KEYWORDS:
+        if end >= 2 and tokens[end - 1].text in (".", ":"):
+            return _prefix_start(tokens, end - 2)
+        return end
 
-        -- 4. Fallback: Return NIL (to satisfy Fallback Path logic)
-        print("ACCESSED (NIL) --> " .. k)
-        return nil
-    end,
-    
-    __newindex = function(t, k, v)
-        local val_str = ""
-        if real_type(v) == "string" then
-            val_str = '"' .. v .. '"'
-        elseif real_type(v) == "number" or real_type(v) == "boolean" then
-            val_str = tostring(v)
-        else
-            val_str = tostring(v)
-        end
-        print("SET GLOBAL --> " .. tostring(k) .. " = " .. val_str)
-        rawset(t, k, v)
-    end
-})
+    if token.text not in ("]", ")"):
+        return None
 
-safe_globals["_G"] = MockEnv
-safe_globals["shared"] = MockEnv
-"""
+    opening_bracket = "[" if token.text == "]" else "("
+    depth = 1
+    start = end - 1
 
-    idx_args = content.rfind("(getfenv")
-    if idx_args == -1:
-         idx_args = content.rfind("( getfenv")
+    while start >= 0:
+        previous = tokens[start]
 
-    if idx_args == -1:
-         idx_args = len(content)
+        if previous.kind not in ("string", "longstring"):
+            if previous.text == token.text:
+                depth += 1
+            elif previous.text == opening_bracket:
+                depth -= 1
+                if depth == 0:
+                    break
 
-    idx_ret = content.rfind("return(function", 0, idx_args)
-    if idx_ret == -1:
-        print(f"Could not find return(function injection point in {filepath}.")
-        return
+        start -= 1
 
-    dumper_code = f"""
-    print("--- CONSTANTS START ---")
-    if {var_name} then
-        local sorted_keys = {{}}
-        for k in pairs({var_name}) do table.insert(sorted_keys, k) end
-        table.sort(sorted_keys)
-        local out = "local Constants = {{"
-        for i, k in ipairs(sorted_keys) do
-            local v = {var_name}[k]
-            local v_str = escape_lua_string(v)
-            out = out .. " [" .. k .. "] = " .. v_str .. ","
-        end
-        out = out .. " }}"
-        print(out)
-    end
-    print("--- CONSTANTS END ---")
-    """
+    if start < 0:
+        return None
 
-    new_content = mock_env_code + content[:idx_ret] + dumper_code + content[idx_ret:]
+    previous = tokens[start - 1] if start > 0 else None
+    if previous is not None:
+        follows_identifier = (
+            previous.kind == "name" and previous.text not in LUA_KEYWORDS
+        )
+        follows_bracket = previous.text in ("]", ")")
 
-    if "getfenv and getfenv()or _ENV" in new_content:
-        new_content = new_content.replace("getfenv and getfenv()or _ENV", "MockEnv")
+        if follows_identifier or follows_bracket:
+            return _prefix_start(tokens, start - 1)
+
+    return start if token.text == ")" else None
+
+
+def _compound_target(source, tokens, start, operator_index):
+    last_token = tokens[operator_index - 1]
+
+    if last_token.text == "]":
+        for index in range(start, operator_index):
+            if tokens[index].text != "[":
+                continue
+            if _matching_bracket(tokens, index) == operator_index - 1:
+                base = source[tokens[start].start:tokens[index].start]
+                key = source[tokens[index].end:last_token.start]
+                return base, key
     else:
-        new_content = re.sub(r'getfenv\s+and\s+getfenv\(\)or\s+_ENV', 'MockEnv', new_content)
+        base = source[tokens[start].start:tokens[operator_index - 2].start]
+        return base, lua_string(last_token.text)
 
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        suffix=".lua",
-        delete=False,
-    ) as temp_handle:
-        temp_file = temp_handle.name
-        temp_handle.write(new_content)
 
-    print(f"Executing deobfuscation for {filepath}...")
+def _rewrite_indexed_assignment(base, key, operator, expression, names):
+    suffix = 1
 
-    process = subprocess.Popen([get_lua_executable(), temp_file, "1"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    while f"__deobf_object_{suffix}" in names or f"__deobf_key_{suffix}" in names:
+        suffix += 1
 
-    stdout_lines = []
-    
-    RELEVANT_PREFIXES = (
-        "ACCESSED", "CALL_RESULT", "local Constants =", 
-        "URL DETECTED", "SET GLOBAL", "UNPACK CALLED", 
-        "CAPTURED CHUNK", "CLOSURE", "TRACE_PRINT", 
-        "PROP_SET", "LOADSTRING"
+    object_name = f"__deobf_object_{suffix}"
+    key_name = f"__deobf_key_{suffix}"
+    names.update((object_name, key_name))
+    target = f"{object_name}[{key_name}]"
+
+    return (
+        f"do local {object_name} = {base}; "
+        f"local {key_name} = {key}; "
+        f"{target} = {target} {operator} {expression} end"
     )
-    
-    stdout_data = b""
-    err = b""
-    try:
-        stdout_data, err = process.communicate(timeout=20)
-    except subprocess.TimeoutExpired as exc:
-        print("Timeout reached.")
-        process.kill()
-        stdout_data, err = process.communicate()
-        if exc.output:
-            stdout_data = exc.output + stdout_data
-        if exc.stderr:
-            err = exc.stderr + err
-    except Exception as e:
-        print(f"Error: {e}")
-        process.kill()
 
-    if stdout_data:
-        for line in stdout_data.decode('utf-8', errors='replace').splitlines():
-            stdout_lines.append(line.strip())
-            if any(prefix in line for prefix in RELEVANT_PREFIXES):
-                print(line.strip())
-    stderr_text = ""
-    if err:
-        stderr_text = err.decode('utf-8', errors='replace')
-        if LUA_CONTROL_STRUCTURE_TOO_LONG in stderr_text and static_constants:
-            print("Lua 5.1 could not compile the full script; using static string-table fallback.")
-        elif stderr_text.strip():
-            print("STDERR:", stderr_text)
 
-    constants_str = ""
-    trace_lines = []
+def normalize_luau_syntax(source):
+    tokens = lua_tokens(source)
+    names = {token.text for token in tokens if token.kind == "name"}
+    replacements = []
 
+    for index, token in enumerate(tokens):
+        if token.kind != "operator":
+            continue
+        if token.text not in COMPOUND_ASSIGNMENT_OPERATORS:
+            continue
+
+        start = _prefix_start(tokens, index - 1)
+        if start is None:
+            continue
+
+        end = _rhs_end(tokens, index + 1)
+        if end == index + 1:
+            continue
+
+        target = source[tokens[start].start:token.start].strip()
+        value = source[tokens[index + 1].start:tokens[end - 1].end]
+        expression = value if end == index + 2 else f"({value})"
+        operator = token.text[:-1]
+        replacement = f"{target} = {target} {operator} {expression}"
+
+        if index - start > 1:
+            base, key = _compound_target(source, tokens, start, index)
+            replacement = _rewrite_indexed_assignment(
+                base, key, operator, expression, names
+            )
+
+        replacements.append((tokens[start].start, tokens[end - 1].end, replacement))
+
+    for start, end, replacement in reversed(replacements):
+        source = source[:start] + replacement + source[end:]
+
+    return source
+
+
+def run_chunk(source, timeout=20):
+    executable = get_lua_executable()
+    runtime = ROOT / "lua_runtime.lua"
+
+    with tempfile.TemporaryDirectory(prefix="lua-trace-") as directory:
+        input_path = Path(directory) / "input.lua"
+        input_path.write_text(source, encoding="utf-8")
+
+        process = subprocess.Popen(
+            [executable, str(runtime), str(input_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+            stderr += b"\nExecution timed out"
+
+    return (
+        stdout.decode("utf-8", errors="replace"),
+        stderr.decode("utf-8", errors="replace"),
+        process.returncode,
+    )
+
+
+def read_sections(stdout):
+    constants = []
+    trace = []
     in_constants = False
-    for line in stdout_lines:
+
+    for line in stdout.splitlines():
         if line == "--- CONSTANTS START ---":
             in_constants = True
-            continue
-        if line == "--- CONSTANTS END ---":
+        elif line == "--- CONSTANTS END ---":
             in_constants = False
-            continue
+        elif in_constants:
+            constants.append(line)
+        else:
+            trace.append(line)
 
-        if in_constants:
-            constants_str += line + "\n"
-        elif any(prefix in line for prefix in RELEVANT_PREFIXES):
-            trace_lines.append(line)
+    return "\n".join(constants), trace
 
-    if not constants_str and LUA_CONTROL_STRUCTURE_TOO_LONG in stderr_text and static_constants:
-        constants_str = static_constants + "\n"
 
-    report_file = filepath + ".report.txt"
-    with open(report_file, 'w', encoding='utf-8') as f:
-        f.write("--- DEOBFUSCATION REPORT ---\n")
-        f.write(f"File: {filepath}\n\n")
-        f.write("--- TRACE ---\n")
-        for line in trace_lines:
-            f.write(line + "\n")
-        f.write("\n--- CONSTANTS ---\n")
-        f.write(constants_str)
+def _recover_static_constants(source, stdout, trace, constants):
+    failed_compile = any(line.startswith("COMPILE ERROR") for line in trace)
+    if not failed_compile or LUA_CONTROL_STRUCTURE_TOO_LONG not in stdout:
+        return constants
 
-    print(f"Report saved to {report_file}")
+    first_table = next(constant_tables(source), None)
+    if first_table is None:
+        return constants
+
+    recovered = extract_static_constants(source, first_table[0])
+    if recovered:
+        print(
+            "Lua 5.1 could not compile the full script; "
+            "using static string-table fallback."
+        )
+        return recovered
+
+    return constants
+
+
+def _write_report(path, constants, trace):
+    report = Path(str(path) + ".report.txt")
+    sections = [
+        "--- DEOBFUSCATION REPORT ---",
+        f"File: {path}",
+        "",
+        "--- TRACE ---",
+        *trace,
+        "--- TRACE END ---",
+        "",
+        "--- CONSTANTS ---",
+        constants,
+        "",
+    ]
+    report.write_text("\n".join(sections), encoding="utf-8")
+    return report
+
+
+def deobfuscate_file(filepath):
+    path = Path(filepath)
+
+    if ".deobf." in path.name or ".report." in path.name:
+        return True
+
+    print(f"Processing {path}...")
 
     try:
-        import trace_to_lua
-        import importlib
-        importlib.reload(trace_to_lua)
-        trace_to_lua.parse_trace(report_file)
-    except Exception as e:
-        print(f"Failed to convert trace: {e}")
-        import traceback
-        traceback.print_exc()
+        source = path.read_text(encoding="utf-8")
+        normalized = normalize_luau_syntax(source)
+        instrumented = instrument_constants(normalized)
+        stdout, stderr, return_code = run_chunk(instrumented)
+    except (OSError, RuntimeError, UnicodeError) as error:
+        print(f"Error: {error}")
+        return False
 
-    if os.path.exists(temp_file):
-        os.remove(temp_file)
-    #if os.path.exists(report_file):
-    #    os.remove(report_file)
+    constants, trace = read_sections(stdout)
+    constants = _recover_static_constants(normalized, stdout, trace, constants)
 
-def main():
-    target = "obfuscated_scripts"
-    if len(sys.argv) > 1:
-        target = sys.argv[1]
+    if stderr:
+        trace.append("EXECUTION ERROR --> " + stderr.strip())
 
-    if os.path.isfile(target):
-        deobfuscate_file(target)
-    elif os.path.isdir(target):
-        files = glob.glob(os.path.join(target, "*.lua"))
-        for file in sorted(files):
-            if "temp_deob" in file or ".report.txt" in file or ".deobf." in file:
-                continue
-            deobfuscate_file(file)
-            print("-" * 40)
+    for line in trace:
+        print(line)
+
+    report = _write_report(path, constants, trace)
+
+    import trace_to_lua
+
+    trace_to_lua.parse_trace(str(report))
+    return return_code == 0 and not stderr
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "target",
+        nargs="?",
+        type=Path,
+        default=Path("obfuscated_scripts"),
+    )
+    target = parser.parse_args(argv).target
+
+    if target.is_file():
+        files = [target]
+    elif target.is_dir():
+        files = sorted(
+            path
+            for path in target.rglob("*")
+            if path.suffix in (".lua", ".luau")
+            and ".deobf." not in path.name
+            and ".report." not in path.name
+        )
     else:
-        print("Invalid path")
+        parser.error(f"path does not exist: {target}")
+
+    success = True
+
+    for path in files:
+        if not deobfuscate_file(str(path)):
+            success = False
+
+    return 0 if success else 1
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

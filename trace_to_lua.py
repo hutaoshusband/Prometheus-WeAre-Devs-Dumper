@@ -1,7 +1,9 @@
 import os
 import sys
 import re
-from collections import OrderedDict
+from collections import Counter
+
+from deobfuscator import LUA_KEYWORDS, lua_string, lua_tokens
 
 
 def clean_dummy_name(name):
@@ -67,36 +69,19 @@ def simplify_call_result(line):
 def smart_split_args(args_str):
     result = []
     depth = 0
-    current = ""
-    in_string = False
-    string_char = None
-
-    for ch in args_str:
-        if in_string:
-            current += ch
-            if ch == string_char:
-                in_string = False
+    start = 0
+    for token in lua_tokens(args_str):
+        if token.kind in ("string", "longstring"):
             continue
-
-        if ch == '"' or ch == "'":
-            in_string = True
-            string_char = ch
-            current += ch
-        elif ch == '(':
+        if token.text in ("(", "{", "["):
             depth += 1
-            current += ch
-        elif ch == ')':
+        elif token.text in (")", "}", "]"):
             depth -= 1
-            current += ch
-        elif ch == ',' and depth == 0:
-            result.append(current)
-            current = ""
-        else:
-            current += ch
-
-    if current.strip():
-        result.append(current)
-
+        elif token.text == "," and depth == 0:
+            result.append(args_str[start:token.start])
+            start = token.end
+    if args_str[start:].strip():
+        result.append(args_str[start:])
     return result
 
 
@@ -208,6 +193,7 @@ def parse_trace(report_file):
     in_trace = False
 
     for line in lines:
+        raw_line = line.rstrip("\r\n")
         line = line.strip()
         if not line:
             continue
@@ -226,12 +212,12 @@ def parse_trace(report_file):
             continue
 
         if in_constants:
-            constants_str += line + "\n"
+            constants_str += raw_line + "\n"
         elif in_trace or any(line.startswith(prefix) for prefix in [
             "CALL_RESULT -->", "SET GLOBAL -->", "TRACE_PRINT -->",
             "URL DETECTED -->", "--- ENTERING CLOSURE", "--- EXITING CLOSURE",
             "ACCESSED -->", "LOADSTRING DETECTED", "LOADSTRING CONTENT",
-            "PROP_SET -->"
+            "PROP_SET -->", "PRINT_CALL -->", "RETURN -->", "CLOSURE_ARGS -->"
         ]):
             trace_lines.append(line)
 
@@ -240,16 +226,23 @@ def parse_trace(report_file):
 
     for line in trace_lines:
         if line.startswith("CALL_RESULT -->"):
-            code = line.split("CALL_RESULT -->")[1].strip()
+            code = line.split("CALL_RESULT -->", 1)[1].strip()
             operations.append({"type": "call", "raw": code, "depth": len(closure_stack)})
 
         elif line.startswith("SET GLOBAL -->"):
-            code = line.split("SET GLOBAL -->")[1].strip()
+            code = line.split("SET GLOBAL -->", 1)[1].strip()
             operations.append({"type": "set_global", "raw": code, "depth": len(closure_stack)})
 
         elif line.startswith("TRACE_PRINT -->"):
-            msg = line.split("TRACE_PRINT -->")[1].strip()
+            msg = line.split("TRACE_PRINT -->", 1)[1].strip()
             operations.append({"type": "print", "raw": msg, "depth": len(closure_stack)})
+
+        elif line.startswith(("PRINT_CALL -->", "RETURN -->")):
+            code = line.split(" -->", 1)[1].strip()
+            operations.append({"type": "statement", "raw": code, "depth": len(closure_stack)})
+
+        elif line.startswith("CLOSURE_ARGS -->"):
+            operations.append({"type": "closure_args", "raw": line.split(" -->", 1)[1].strip()})
 
         elif line.startswith("URL DETECTED -->"):
             url = line.split("URL DETECTED -->")[1].strip()
@@ -266,7 +259,7 @@ def parse_trace(report_file):
                 closure_stack.pop()
 
         elif line.startswith("PROP_SET -->"):
-            code = line.split("PROP_SET -->")[1].strip()
+            code = line.split("PROP_SET -->", 1)[1].strip()
             operations.append({"type": "prop_set", "raw": code, "depth": len(closure_stack)})
 
         elif line.startswith("LOADSTRING DETECTED"):
@@ -276,103 +269,51 @@ def parse_trace(report_file):
     var_counter = {}
     var_map = {}
     used_vars = set()
+    references = Counter(token.text for operation in operations
+                         for token in lua_tokens(operation.get("raw", "")) if token.kind == "name")
+    used_vars.update(references)
 
-    top_level_calls = [op for op in operations if op["type"] == "call" and op["depth"] == 0]
-    loop_info = detect_loops([op["raw"] for op in top_level_calls])
+    closure_info_stack = []
+    for index, operation in enumerate(operations):
+        indent = "    " * len(closure_info_stack)
+        kind = operation["type"]
+        if kind == "call":
+            declared = re.match(r"local\s+(\w+)", operation["raw"])
+            keep_result = declared is not None and references[declared.group(1)] > 1
+            line = process_call_line(operation["raw"], var_map, var_counter, used_vars, keep_result)
+            if index + 1 < len(operations) and operations[index + 1]["type"] == "closure_start":
+                placeholder = "function(...) end"
+                if placeholder in line:
+                    before, after = line.split(placeholder, 1)
+                    line = before + "function(...)"
+                    operations[index + 1]["inline_close"] = "end" + after
+            lua_lines.append(indent + line)
+        elif kind == "statement":
+            lua_lines.append(indent + resolve_vars(operation["raw"], var_map))
+        elif kind == "print":
+            lua_lines.append(indent + "print(" + lua_string(operation["raw"]) + ")")
+        elif kind == "set_global":
+            lua_lines.append(indent + process_set_global(operation["raw"], var_map))
+        elif kind == "prop_set":
+            lua_lines.append(indent + process_prop_set(operation["raw"], var_map))
+        elif kind == "closure_start":
+            closing = operation.get("inline_close")
+            if closing is None:
+                lua_lines.append(indent + "local function callback(...)")
+                closing = "end"
+            closure_info_stack.append(closing)
+            if index + 1 >= len(operations) or operations[index + 1]["type"] != "closure_args":
+                lua_lines.append(indent + "    local arg1, arg2, arg3, arg4 = ...")
+        elif kind == "closure_args":
+            lua_lines.append(indent + "local " + operation["raw"] + " = ...")
+        elif kind == "closure_end" and closure_info_stack:
+            closing = closure_info_stack.pop()
+            lua_lines.append("    " * len(closure_info_stack) + closing)
 
-    if loop_info:
-        pattern_len, repeat_count, pattern_lines = loop_info
-        lua_lines.append(f"-- Loop detected: {repeat_count} iterations")
-        lua_lines.append(f"while true do")
-
-        for raw_line in pattern_lines:
-            clean_line = process_call_line(raw_line, var_map, var_counter, used_vars)
-            if clean_line:
-                lua_lines.append(f"    {clean_line}")
-
-        lua_lines.append("end")
-        lua_lines.append("")
-
-        loop_end_idx = pattern_len * repeat_count
-        remaining_ops = [op for i, op in enumerate(operations)
-                        if not (op["type"] == "call" and op["depth"] == 0 and
-                               operations.index(op) < loop_end_idx * (len(operations) / len(top_level_calls) if top_level_calls else 1))]
-    else:
-        closure_info_stack = []
-        i = 0
-        while i < len(operations):
-            op = operations[i]
-            in_closure = len(closure_info_stack)
-            indent = "    " * in_closure
-
-            if op["type"] == "call":
-                clean_line = process_call_line(op["raw"], var_map, var_counter, used_vars)
-                if clean_line:
-                    skip = False
-                    CONSTRUCTOR_PREFIXES = ("UDim2.new", "Color3.fromRGB", "Color3.new",
-                                           "Vector3.new", "Vector2.new", "CFrame.new",
-                                           "BrickColor.new", "NumberRange.new")
-                    if any(clean_line.startswith(p) for p in CONSTRUCTOR_PREFIXES):
-                        if i + 1 < len(operations) and operations[i+1]["type"] == "prop_set":
-                            next_raw = operations[i+1]["raw"]
-                            if clean_line in next_raw or clean_line.split("(")[0] in next_raw:
-                                skip = True
-
-                    if not skip:
-                        if i + 1 < len(operations) and operations[i+1]["type"] == "closure_start":
-                            if "function(...) end)" in clean_line:
-                                clean_line = clean_line.replace("function(...) end)", "function(...)")
-                                operations[i+1]["inline_close"] = "end)"
-                            elif "function(...) end" in clean_line:
-                                clean_line = clean_line.replace("function(...) end", "function(...)")
-                                operations[i+1]["inline_close"] = "end"
-                        lua_lines.append(f"{indent}{clean_line}")
-
-            elif op["type"] == "set_global":
-                clean_line = process_set_global(op["raw"], var_map)
-                if clean_line:
-                    lua_lines.append(f"{indent}{clean_line}")
-
-            elif op["type"] == "print":
-                msg = op["raw"].replace('\\', '\\\\').replace('"', '\\"')
-                lua_lines.append(f'{indent}print("{msg}")')
-
-            elif op["type"] == "url":
-                lua_lines.append(f'{indent}-- URL: {op["raw"]}')
-
-            elif op["type"] == "prop_set":
-                clean_line = process_prop_set(op["raw"], var_map)
-                if clean_line:
-                    lua_lines.append(f"{indent}{clean_line}")
-
-            elif op["type"] == "closure_start":
-                inline_close = op.get("inline_close")
-                if inline_close is not None:
-                    closure_info_stack.append(inline_close)
-                else:
-                    closure_name = op["name"]
-                    lua_lines.append(f"{indent}-- Closure for {closure_name}")
-                    lua_lines.append(f"{indent}local function callback(...)")
-                    closure_info_stack.append("end")
-
-            elif op["type"] == "closure_end":
-                if closure_info_stack:
-                    close_str = closure_info_stack.pop()
-                else:
-                    close_str = "end"
-                indent_inner = "    " * len(closure_info_stack)
-                lua_lines.append(f"{indent_inner}{close_str}")
-
-            elif op["type"] == "loadstring":
-                lua_lines.append(f"{indent}-- {op['raw']}")
-
-            i += 1
-
-    output_lines = ["-- Deobfuscated via Trace Emulation", ""]
+    output_lines = []
 
     if constants_str.strip():
-        output_lines.append("-- === String Constants ===")
-        output_lines.append(constants_str.strip())
+        output_lines.append("do\n" + "\n".join("    " + line for line in constants_str.strip().splitlines()) + "\nend")
         output_lines.append("")
 
     output_lines.extend(lua_lines)
@@ -387,7 +328,7 @@ def parse_trace(report_file):
     print(f"Saved {out_file}")
 
 
-def process_call_line(raw, var_map, var_counter, used_vars):
+def process_call_line(raw, var_map, var_counter, used_vars, keep_result=True):
     m = re.match(r'^local\s+(\S+)\s*=\s*(.+)$', raw)
     if not m:
         return raw
@@ -426,7 +367,8 @@ def process_call_line(raw, var_map, var_counter, used_vars):
     clean_arg_strs = []
     for a in clean_args:
         a = a.strip()
-        a = re.sub(r'function:\s*[0-9a-fA-F]+', 'function(...) end', a)
+        if re.fullmatch(r"function:\s*[0-9a-fA-F]+", a):
+            a = "function(...) end"
         clean_arg_strs.append(a)
     args_str = ", ".join(clean_arg_strs)
 
@@ -435,28 +377,26 @@ def process_call_line(raw, var_map, var_counter, used_vars):
     else:
         call_expr = f"{func_chain}({args_str})"
 
-    needs_var = True
-    nice_name = None
-
     if is_method:
         nice_name = generate_var_name(obj_str, method_str, clean_arg_strs)
-
-        if method_str in ("Connect", "FireServer", "Disconnect", "Destroy",
-                          "CaptureController", "ClickButton2", "ChangeState",
-                          "MoveTo", "SetPrimaryPartCFrame", "ClearAllChildren",
-                          "Clone", "Remove", "remove", "insert", "sort"):
-            needs_var = False
-
-        if method_str == "wait":
-            needs_var = False
     else:
         nice_name = generate_var_name_from_func(func_chain, clean_arg_strs)
-        if "task.wait" in func_chain or "wait" in func_chain.lower():
-            needs_var = False
 
-    if nice_name and needs_var:
+    if not keep_result:
+        return call_expr
+    if not nice_name:
+        nice_name = parts[-2].lower() if len(parts) > 1 and parts[-1] == "new" else "result"
+
+    if nice_name:
+        nice_name = re.sub(r"[^a-zA-Z0-9_]", "_", nice_name)
+        if not nice_name or nice_name[0].isdigit() or nice_name in LUA_KEYWORDS:
+            nice_name = "value_" + nice_name
+
+    if nice_name:
         if nice_name in used_vars:
             count = var_counter.get(nice_name, 1) + 1
+            while f"{nice_name}{count}" in used_vars:
+                count += 1
             var_counter[nice_name] = count
             final_name = f"{nice_name}{count}"
         else:
@@ -466,24 +406,16 @@ def process_call_line(raw, var_map, var_counter, used_vars):
         used_vars.add(final_name)
         var_map[orig_var] = final_name
         return f"local {final_name} = {call_expr}"
-    else:
-        if nice_name:
-            var_map[orig_var] = nice_name
-        else:
-            var_map[orig_var] = call_expr
-        return call_expr
 
 
 def resolve_vars(text, var_map):
-    sorted_vars = sorted(var_map.keys(), key=len, reverse=True)
-
-    for dummy_var in sorted_vars:
-        if dummy_var and var_map[dummy_var]:
-            clean_var = var_map[dummy_var]
-            text = re.sub(r'\b' + re.escape(dummy_var) + r'\b', clean_var, text)
-
-    text = re.sub(r'\b[a-zA-Z0-9_]+_v(\d+)\b', r'v\1', text)
-
+    tokens = lua_tokens(text)
+    for index in range(len(tokens) - 1, -1, -1):
+        token = tokens[index]
+        is_member = index > 0 and tokens[index - 1].text in (".", ":")
+        is_key = index + 1 < len(tokens) and tokens[index + 1].text == "=" and index > 0 and tokens[index - 1].text in ("{", ",", ";")
+        if token.kind == "name" and token.text in var_map and not is_member and not is_key:
+            text = text[:token.start] + var_map[token.text] + text[token.end:]
     return text
 
 
@@ -526,22 +458,7 @@ def process_prop_set(raw, var_map):
 
 
 def postprocess_output(output):
-    lines = output.split("\n")
-    cleaned = []
-    prev_line = ""
-
-    for line in lines:
-        stripped = line.strip()
-
-        if stripped == "" and prev_line.strip() == "":
-            continue
-
-        line = re.sub(r'function:\s*[0-9a-fA-F]{10,}', 'function(...) end', line)
-
-        cleaned.append(line)
-        prev_line = line
-
-    return "\n".join(cleaned)
+    return output.strip() + "\n"
 
 
 if __name__ == "__main__":

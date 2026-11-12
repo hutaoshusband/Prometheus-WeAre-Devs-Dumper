@@ -1,0 +1,30 @@
+{
+  "non_roblox/lua.lua": {
+    "strings": ["standalone-lua", "quotes: \"hello\" and 'world'", "path: C:\\fixtures\\sample.lua", "first\nsecond\tcolumn\rreturn", "Grüße 世界", "", "https://example.com/test?mode=lua&value=42", "numbers", "after-nil", "sum", "lua-complete"],
+    "binary_hex": ["00017f80ff"],
+    "numbers": [42, -17, 3.25, 10],
+    "booleans": [true, false],
+    "code": ["print(", "return "]
+  },
+  "non_roblox/luau.luau": {
+    "strings": ["standalone-luau:ready", "literal += stays literal", "brackets [=[text]=]", "\"quoted\",comma", "luau\nline\tcolumn", "Grüße 世界", "", "values", "after-nil", "luau-complete"],
+    "binary_hex": ["00ff"],
+    "numbers": [20, 4096, -0.125],
+    "booleans": [true, false],
+    "code": ["print(", "return "]
+  },
+  "roblox/lua.lua": {
+    "strings": ["Players", "ReplicatedStorage", "FixtureRemote", "Folder", "RobloxLuaFixture", "FixtureCount", "Enabled", "hello-player", "callback-lua", "quotes: \"yes\"", "roblox-lua", "Grüße 世界", "line\nnext", "", "roblox-lua-complete"],
+    "binary_hex": ["00ff"],
+    "numbers": [42, 3.25, -17],
+    "booleans": [true, false],
+    "code": ["game:GetService(\"Players\")", "Instance.new(\"Folder\")", ":WaitForChild(\"FixtureRemote\")", ":Connect(function(...)", ":FireServer(\"hello-player\"", "return "]
+  },
+  "roblox/luau.luau": {
+    "strings": ["ReplicatedStorage", "LuauFixtureRemote", "Part", "RobloxLuauFixture", "Count", "callback-luau", "escaped\\path", "fixture-ready", "roblox-luau", "Grüße 世界", "line\nnext", "", "roblox-luau-complete"],
+    "binary_hex": ["00ff"],
+    "numbers": [8, 0.25, 4096, -0.125],
+    "booleans": [true, false],
+    "code": ["game:GetService(\"ReplicatedStorage\")", "Instance.new(\"Part\")", "Vector3.new(1, 2, 3)", ":Connect(function(...)", ":FireServer(\"fixture-ready\"", "return "]
+  }
+}
